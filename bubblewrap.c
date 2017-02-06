@@ -44,16 +44,11 @@
 /* Globals to avoid having to use getuid(), since the uid/gid changes during runtime */
 static uid_t real_uid;
 static gid_t real_gid;
-static uid_t overflow_uid;
-static gid_t overflow_gid;
-static bool is_privileged;
 static const char *argv0;
 static const char *host_tty_dev;
 static int proc_fd = -1;
 
 char *opt_chdir_path = NULL;
-bool opt_unshare_user = FALSE;
-bool opt_unshare_user_try = FALSE;
 bool opt_unshare_pid = FALSE;
 bool opt_unshare_ipc = FALSE;
 bool opt_unshare_uts = FALSE;
@@ -61,8 +56,6 @@ bool opt_unshare_cgroup = FALSE;
 bool opt_unshare_cgroup_try = FALSE;
 bool opt_needs_devpts = FALSE;
 bool opt_new_session = FALSE;
-uid_t opt_sandbox_uid = -1;
-gid_t opt_sandbox_gid = -1;
 int opt_sync_fd = -1;
 int opt_block_fd = -1;
 int opt_info_fd = -1;
@@ -176,15 +169,11 @@ usage (int ecode, FILE *out)
            "    --help                       Print this help\n"
            "    --version                    Print version\n"
            "    --args FD                    Parse nul-separated args from FD\n"
-           "    --unshare-user               Create new user namespace (may be automatically implied if not setuid)\n"
-           "    --unshare-user-try           Create new user namespace if possible else continue by skipping it\n"
            "    --unshare-ipc                Create new ipc namespace\n"
            "    --unshare-pid                Create new pid namespace\n"
            "    --unshare-uts                Create new uts namespace\n"
            "    --unshare-cgroup             Create new cgroup namespace\n"
            "    --unshare-cgroup-try         Create new cgroup namespace if possible else continue by skipping it\n"
-           "    --uid UID                    Custom uid in the sandbox (requires --unshare-user)\n"
-           "    --gid GID                    Custon gid in the sandbox (requires --unshare-user)\n"
            "    --hostname NAME              Custom hostname in the sandbox (requires --unshare-uts)\n"
            "    --chdir DIR                  Change directory to DIR\n"
            "    --setenv VAR VALUE           Set an environment variable\n"
@@ -424,163 +413,6 @@ do_init (int event_fd, pid_t initial_pid, struct sock_fprog *seccomp_prog)
   return initial_exit_status;
 }
 
-/* low 32bit caps needed */
-#define REQUIRED_CAPS_0 (CAP_TO_MASK (CAP_SYS_ADMIN) | CAP_TO_MASK (CAP_SYS_CHROOT) | CAP_TO_MASK (CAP_NET_ADMIN) | CAP_TO_MASK (CAP_SETUID) | CAP_TO_MASK (CAP_SETGID))
-/* high 32bit caps needed */
-#define REQUIRED_CAPS_1 0
-
-static void
-set_required_caps (void)
-{
-  struct __user_cap_header_struct hdr = { _LINUX_CAPABILITY_VERSION_3, 0 };
-  struct __user_cap_data_struct data[2] = { { 0 } };
-
-  /* Drop all non-require capabilities */
-  data[0].effective = REQUIRED_CAPS_0;
-  data[0].permitted = REQUIRED_CAPS_0;
-  data[0].inheritable = 0;
-  data[1].effective = REQUIRED_CAPS_1;
-  data[1].permitted = REQUIRED_CAPS_1;
-  data[1].inheritable = 0;
-  if (capset (&hdr, data) < 0)
-    die_with_error ("capset failed");
-}
-
-static void
-drop_all_caps (void)
-{
-  struct __user_cap_header_struct hdr = { _LINUX_CAPABILITY_VERSION_3, 0 };
-  struct __user_cap_data_struct data[2] = { { 0 } };
-
-  if (capset (&hdr, data) < 0)
-    die_with_error ("capset failed");
-}
-
-static bool
-has_caps (void)
-{
-  struct __user_cap_header_struct hdr = { _LINUX_CAPABILITY_VERSION_3, 0 };
-  struct __user_cap_data_struct data[2] = { { 0 } };
-
-  if (capget (&hdr, data)  < 0)
-    die_with_error ("capget failed");
-
-  return data[0].permitted != 0 || data[1].permitted != 0;
-}
-
-static void
-drop_cap_bounding_set (void)
-{
-  unsigned long cap;
-
-  for (cap = 0; cap <= 63; cap++)
-    {
-      int res = prctl (PR_CAPBSET_DROP, cap, 0, 0, 0);
-      if (res == -1 && errno != EINVAL)
-        die_with_error ("Dropping capability %ld from bounds", cap);
-    }
-}
-
-/* This acquires the privileges that the bwrap will need it to work.
- * If bwrap is not setuid, then this does nothing, and it relies on
- * unprivileged user namespaces to be used. This case is
- * "is_privileged = FALSE".
- *
- * If bwrap is setuid, then we do things in phases.
- * The first part is run as euid 0, but with with fsuid as the real user.
- * The second part, inside the child, is run as the real user but with
- * capabilities.
- * And finally we drop all capabilities.
- * The reason for the above dance is to avoid having the setup phase
- * being able to read files the user can't, while at the same time
- * working around various kernel issues. See below for details.
- */
-static void
-acquire_privs (void)
-{
-  uid_t euid, new_fsuid;
-
-  euid = geteuid ();
-
-  /* Are we setuid ? */
-  if (real_uid != euid)
-    {
-      if (euid == 0)
-        is_privileged = TRUE;
-      else
-        die ("Unexpected setuid user %d, should be 0", euid);
-
-      /* We want to keep running as euid=0 until at the clone()
-       * operation because doing so will make the user namespace be
-       * owned by root, which makes it not ptrace:able by the user as
-       * it otherwise would be. After that we will run fully as the
-       * user, which is necessary e.g. to be able to read from a fuse
-       * mount from the user.
-       *
-       * However, we don't want to accidentally mis-use euid=0 for
-       * escalated filesystem access before the clone(), so we set
-       * fsuid to the uid.
-       */
-      if (setfsuid (real_uid) < 0)
-        die_with_error ("Unable to set fsuid");
-
-      /* setfsuid can't properly report errors, check that it worked (as per manpage) */
-      new_fsuid = setfsuid (-1);
-      if (new_fsuid != real_uid)
-        die ("Unable to set fsuid (was %d)", (int)new_fsuid);
-
-      /* We never need capabilies after execve(), so lets drop everything from the bounding set */
-      drop_cap_bounding_set ();
-
-      /* Keep only the required capabilities for setup */
-      set_required_caps ();
-    }
-  else if (real_uid != 0 && has_caps ())
-    {
-      /* We have some capabilities in the non-setuid case, which should not happen.
-         Probably caused by the binary being setcap instead of setuid which we
-         don't support anymore */
-      die ("Unexpected capabilities but not setuid, old file caps config?");
-    }
-
-  /* Else, we try unprivileged user namespaces */
-}
-
-/* This is called once we're inside the namespace */
-static void
-switch_to_user_with_privs (void)
-{
-  /* If we're in a new user namespace, we got back the bounding set, clear it again */
-  if (opt_unshare_user)
-    drop_cap_bounding_set ();
-
-  if (!is_privileged)
-    return;
-
-  /* Tell kernel not clear capabilities when later dropping root uid */
-  if (prctl (PR_SET_KEEPCAPS, 1, 0, 0, 0) < 0)
-    die_with_error ("prctl(PR_SET_KEEPCAPS) failed");
-
-  if (setuid (opt_sandbox_uid) < 0)
-    die_with_error ("unable to drop root uid");
-
-  /* Regain effective required capabilities from permitted */
-  set_required_caps ();
-}
-
-static void
-drop_privs (void)
-{
-  if (!is_privileged)
-    return;
-
-  /* Drop root uid */
-  if (setuid (opt_sandbox_uid) < 0)
-    die_with_error ("unable to drop root uid");
-
-  drop_all_caps ();
-}
-
 static char *
 get_newroot_path (const char *path)
 {
@@ -595,73 +427,6 @@ get_oldroot_path (const char *path)
   while (*path == '/')
     path++;
   return strconcat ("/oldroot/", path);
-}
-
-static void
-write_uid_gid_map (uid_t sandbox_uid,
-                   uid_t parent_uid,
-                   uid_t sandbox_gid,
-                   uid_t parent_gid,
-                   pid_t pid,
-                   bool  deny_groups,
-                   bool  map_root)
-{
-  cleanup_free char *uid_map = NULL;
-  cleanup_free char *gid_map = NULL;
-  cleanup_free char *dir = NULL;
-  cleanup_fd int dir_fd = -1;
-  uid_t old_fsuid = -1;
-
-  if (pid == -1)
-    dir = xstrdup ("self");
-  else
-    dir = xasprintf ("%d", pid);
-
-  dir_fd = openat (proc_fd, dir, O_RDONLY | O_PATH);
-  if (dir_fd < 0)
-    die_with_error ("open /proc/%s failed", dir);
-
-  if (map_root && parent_uid != 0 && sandbox_uid != 0)
-    uid_map = xasprintf ("0 %d 1\n"
-                         "%d %d 1\n", overflow_uid, sandbox_uid, parent_uid);
-  else
-    uid_map = xasprintf ("%d %d 1\n", sandbox_uid, parent_uid);
-
-  if (map_root && parent_gid != 0 && sandbox_gid != 0)
-    gid_map = xasprintf ("0 %d 1\n"
-                         "%d %d 1\n", overflow_gid, sandbox_gid, parent_gid);
-  else
-    gid_map = xasprintf ("%d %d 1\n", sandbox_gid, parent_gid);
-
-  /* We have to be root to be allowed to write to the uid map
-   * for setuid apps, so temporary set fsuid to 0 */
-  if (is_privileged)
-    old_fsuid = setfsuid (0);
-
-  if (write_file_at (dir_fd, "uid_map", uid_map) != 0)
-    die_with_error ("setting up uid map");
-
-  if (deny_groups &&
-      write_file_at (dir_fd, "setgroups", "deny\n") != 0)
-    {
-      /* If /proc/[pid]/setgroups does not exist, assume we are
-       * running a linux kernel < 3.19, i.e. we live with the
-       * vulnerability known as CVE-2014-8989 in older kernels
-       * where setgroups does not exist.
-       */
-      if (errno != ENOENT)
-        die_with_error ("error writing to setgroups");
-    }
-
-  if (write_file_at (dir_fd, "gid_map", gid_map) != 0)
-    die_with_error ("setting up gid map");
-
-  if (is_privileged)
-    {
-      setfsuid (old_fsuid);
-      if (setfsuid (-1) != real_uid)
-        die ("Unable to re-set fsuid");
-    }
 }
 
 static void
@@ -1060,54 +825,6 @@ resolve_symlinks_in_ops (void)
 }
 
 
-static const char *
-resolve_string_offset (void    *buffer,
-                       size_t   buffer_size,
-                       uint32_t offset)
-{
-  if (offset == 0)
-    return NULL;
-
-  if (offset > buffer_size)
-    die ("Invalid string offset %d (buffer size %zd)", offset, buffer_size);
-
-  return (const char *) buffer + offset;
-}
-
-static uint32_t
-read_priv_sec_op (int          read_socket,
-                  void        *buffer,
-                  size_t       buffer_size,
-                  uint32_t    *flags,
-                  const char **arg1,
-                  const char **arg2)
-{
-  const PrivSepOp *op = (const PrivSepOp *) buffer;
-  ssize_t rec_len;
-
-  do
-    rec_len = read (read_socket, buffer, buffer_size - 1);
-  while (rec_len == -1 && errno == EINTR);
-
-  if (rec_len < 0)
-    die_with_error ("Can't read from unprivileged helper");
-
-  if (rec_len == 0)
-    exit (1); /* Privileged helper died and printed error, so exit silently */
-
-  if (rec_len < sizeof (PrivSepOp))
-    die ("Invalid size %zd from unprivileged helper", rec_len);
-
-  /* Guarantee zero termination of any strings */
-  ((char *) buffer)[rec_len] = 0;
-
-  *flags = op->flags;
-  *arg1 = resolve_string_offset (buffer, rec_len, op->arg1_offset);
-  *arg2 = resolve_string_offset (buffer, rec_len, op->arg2_offset);
-
-  return op->op;
-}
-
 static void
 parse_args_recurse (int    *argcp,
                     char ***argvp,
@@ -1205,15 +922,6 @@ parse_args_recurse (int    *argcp,
 
           argv += 1;
           argc -= 1;
-        }
-      /* Begin here the older individual --unshare variants */
-      else if (strcmp (arg, "--unshare-user") == 0)
-        {
-          opt_unshare_user = TRUE;
-        }
-      else if (strcmp (arg, "--unshare-user-try") == 0)
-        {
-          opt_unshare_user_try = TRUE;
         }
       else if (strcmp (arg, "--unshare-ipc") == 0)
         {
@@ -1512,40 +1220,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--uid") == 0)
-        {
-          int the_uid;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--uid takes an argument");
-
-          the_uid = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_uid < 0)
-            die ("Invalid uid: %s", argv[1]);
-
-          opt_sandbox_uid = the_uid;
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--gid") == 0)
-        {
-          int the_gid;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--gid takes an argument");
-
-          the_gid = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_gid < 0)
-            die ("Invalid gid: %s", argv[1]);
-
-          opt_sandbox_gid = the_gid;
-
-          argv += 1;
-          argc -= 1;
-        }
       else if (strcmp (arg, "--hostname") == 0)
         {
           if (argc < 2)
@@ -1590,29 +1264,6 @@ parse_args (int    *argcp,
   parse_args_recurse (argcp, argvp, FALSE, &total_parsed_argc);
 }
 
-static void
-read_overflowids (void)
-{
-  cleanup_free char *uid_data = NULL;
-  cleanup_free char *gid_data = NULL;
-
-  uid_data = load_file_at (AT_FDCWD, "/proc/sys/kernel/overflowuid");
-  if (uid_data == NULL)
-    die_with_error ("Can't read /proc/sys/kernel/overflowuid");
-
-  overflow_uid = strtol (uid_data, NULL, 10);
-  if (overflow_uid == 0)
-    die ("Can't parse /proc/sys/kernel/overflowuid");
-
-  gid_data = load_file_at (AT_FDCWD, "/proc/sys/kernel/overflowgid");
-  if (gid_data == NULL)
-    die_with_error ("Can't read /proc/sys/kernel/overflowgid");
-
-  overflow_gid = strtol (gid_data, NULL, 10);
-  if (overflow_gid == 0)
-    die ("Can't parse /proc/sys/kernel/overflowgid");
-}
-
 int
 main (int    argc,
       char **argv)
@@ -1625,8 +1276,6 @@ main (int    argc,
   int event_fd = -1;
   int child_wait_fd = -1;
   const char *new_cwd;
-  uid_t ns_uid;
-  gid_t ns_gid;
   struct stat sbuf;
   uint64_t val;
   int res UNUSED;
@@ -1637,17 +1286,12 @@ main (int    argc,
   real_uid = getuid ();
   real_gid = getgid ();
 
-  /* Get the (optional) privileges we need */
-  acquire_privs ();
-
   /* Never gain any more privs during exec */
   if (prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0)
     die_with_error ("prctl(PR_SET_NO_NEW_CAPS) failed");
 
   /* The initial code is run with high permissions
      (i.e. CAP_SYS_ADMIN), so take lots of care. */
-
-  read_overflowids ();
 
   argv0 = argv[0];
 
@@ -1662,54 +1306,14 @@ main (int    argc,
 
   parse_args (&argc, &argv);
 
-  /* We have to do this if we weren't installed setuid (and we're not
-   * root), so let's just DWIM */
-  if (!is_privileged && getuid () != 0)
-    opt_unshare_user = TRUE;
-
-#ifdef ENABLE_REQUIRE_USERNS
-  /* In this build option, we require userns. */
-  if (is_privileged && getuid () != 0)
-    opt_unshare_user = TRUE;
-#endif
-
-  if (opt_unshare_user_try &&
-      stat ("/proc/self/ns/user", &sbuf) == 0)
-    {
-      bool disabled = FALSE;
-
-      /* RHEL7 has a kernel module parameter that lets you enable user namespaces */
-      if (stat ("/sys/module/user_namespace/parameters/enable", &sbuf) == 0)
-        {
-          cleanup_free char *enable = NULL;
-          enable = load_file_at (AT_FDCWD, "/sys/module/user_namespace/parameters/enable");
-          if (enable != NULL && enable[0] == 'N')
-            disabled = TRUE;
-        }
-
-      /* Debian lets you disable *unprivileged* user namespaces. However this is not
-         a problem if we're privileged, and if we're not opt_unshare_user is TRUE
-         already, and there is not much we can do, its just a non-working setup. */
-
-      if (!disabled)
-        opt_unshare_user = TRUE;
-    }
+  if (!(getuid() == 0 && getgid() == 0 && geteuid() == 0 && getgid() == 0)) {
+    die("must run machroot as root");
+  }
 
   if (argc == 0)
     usage (EXIT_FAILURE, stderr);
 
   __debug__ (("Creating root mount point\n"));
-
-  if (opt_sandbox_uid == -1)
-    opt_sandbox_uid = real_uid;
-  if (opt_sandbox_gid == -1)
-    opt_sandbox_gid = real_gid;
-
-  if (!opt_unshare_user && opt_sandbox_uid != real_uid)
-    die ("Specifying --uid requires --unshare-user");
-
-  if (!opt_unshare_user && opt_sandbox_gid != real_gid)
-    die ("Specifying --gid requires --unshare-user");
 
   if (!opt_unshare_uts && opt_sandbox_hostname != NULL)
     die ("Specifying --hostname requires --unshare-uts");
@@ -1744,8 +1348,6 @@ main (int    argc,
   block_sigchild ();
 
   clone_flags = SIGCHLD | CLONE_NEWNS;
-  if (opt_unshare_user)
-    clone_flags |= CLONE_NEWUSER;
   if (opt_unshare_pid)
     clone_flags |= CLONE_NEWPID;
   if (opt_unshare_ipc)
@@ -1774,43 +1376,14 @@ main (int    argc,
   pid = raw_clone (clone_flags, NULL);
   if (pid == -1)
     {
-      if (opt_unshare_user)
-        {
-          if (errno == EINVAL)
-            die ("Creating new namespace failed, likely because the kernel does not support user namespaces.  bwrap must be installed setuid on such systems.");
-          else if (errno == EPERM && !is_privileged)
-            die ("No permissions to creating new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.");
-        }
-
       die_with_error ("Creating new namespace failed");
     }
-
-  ns_uid = opt_sandbox_uid;
-  ns_gid = opt_sandbox_gid;
 
   if (pid != 0)
     {
       /* Parent, outside sandbox, privileged (initially) */
 
-      if (is_privileged && opt_unshare_user)
-        {
-          /* We're running as euid 0, but the uid we want to map is
-           * not 0. This means we're not allowed to write this from
-           * the child user namespace, so we do it from the parent.
-           *
-           * Also, we map uid/gid 0 in the namespace (to overflowuid)
-           * if opt_needs_devpts is true, because otherwise the mount
-           * of devpts fails due to root not being mapped.
-           */
-          write_uid_gid_map (ns_uid, real_uid,
-                             ns_gid, real_gid,
-                             pid, TRUE, opt_needs_devpts);
-        }
-
       /* Initial launched process, wait for exec:ed command to exit */
-
-      /* We don't need any privileges in the launcher, drop them immediately. */
-      drop_privs ();
 
       /* Let child run now that the uid maps are set up */
       val = 1;
@@ -1852,34 +1425,6 @@ main (int    argc,
   res = read (child_wait_fd, &val, 8);
   close (child_wait_fd);
 
-  /* At this point we can completely drop root uid, but retain the
-   * required permitted caps. This allow us to do full setup as
-   * the user uid, which makes e.g. fuse access work.
-   */
-  switch_to_user_with_privs ();
-
-  ns_uid = opt_sandbox_uid;
-  ns_gid = opt_sandbox_gid;
-  if (!is_privileged && opt_unshare_user)
-    {
-      /* In the unprivileged case we have to write the uid/gid maps in
-       * the child, because we have no caps in the parent */
-
-      if (opt_needs_devpts)
-        {
-          /* This is a bit hacky, but we need to first map the real uid/gid to
-             0, otherwise we can't mount the devpts filesystem because root is
-             not mapped. Later we will create another child user namespace and
-             map back to the real uid */
-          ns_uid = 0;
-          ns_gid = 0;
-        }
-
-      write_uid_gid_map (ns_uid, real_uid,
-                         ns_gid, real_gid,
-                         -1, TRUE, FALSE);
-    }
-
   old_umask = umask (0);
 
   /* Need to do this before the chroot, but after we're the real uid */
@@ -1919,55 +1464,7 @@ main (int    argc,
   if (chdir ("/") != 0)
     die_with_error ("chdir / (base path)");
 
-  if (is_privileged)
-    {
-      pid_t child;
-      int privsep_sockets[2];
-
-      if (socketpair (AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, privsep_sockets) != 0)
-        die_with_error ("Can't create privsep socket");
-
-      child = fork ();
-      if (child == -1)
-        die_with_error ("Can't fork unprivileged helper");
-
-      if (child == 0)
-        {
-          /* Unprivileged setup process */
-          drop_privs ();
-          close (privsep_sockets[0]);
-          setup_newroot (opt_unshare_pid, privsep_sockets[1]);
-          exit (0);
-        }
-      else
-        {
-          int status;
-          uint32_t buffer[2048];  /* 8k, but is int32 to guarantee nice alignment */
-          uint32_t op, flags;
-          const char *arg1, *arg2;
-          cleanup_fd int unpriv_socket = -1;
-
-          unpriv_socket = privsep_sockets[0];
-          close (privsep_sockets[1]);
-
-          do
-            {
-              op = read_priv_sec_op (unpriv_socket, buffer, sizeof (buffer),
-                                     &flags, &arg1, &arg2);
-              privileged_op (-1, op, flags, arg1, arg2);
-              if (write (unpriv_socket, buffer, 1) != 1)
-                die ("Can't write to op_socket");
-            }
-          while (op != PRIV_SEP_OP_DONE);
-
-          waitpid (child, &status, 0);
-          /* Continue post setup */
-        }
-    }
-  else
-    {
-      setup_newroot (opt_unshare_pid, -1);
-    }
+  setup_newroot (opt_unshare_pid, -1);
 
   /* The old root better be rprivate or we will send unmount events to the parent namespace */
   if (mount ("oldroot", "oldroot", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
@@ -1976,21 +1473,6 @@ main (int    argc,
   if (umount2 ("oldroot", MNT_DETACH))
     die_with_error ("unmount old root");
 
-  if (opt_unshare_user &&
-      (ns_uid != opt_sandbox_uid || ns_gid != opt_sandbox_gid))
-    {
-      /* Now that devpts is mounted and we've no need for mount
-         permissions we can create a new userspace and map our uid
-         1:1 */
-
-      if (unshare (CLONE_NEWUSER))
-        die_with_error ("unshare user ns");
-
-      write_uid_gid_map (opt_sandbox_uid, ns_uid,
-                         opt_sandbox_gid, ns_gid,
-                         -1, FALSE, FALSE);
-    }
-
   /* Now make /newroot the real root */
   if (chdir ("/newroot") != 0)
     die_with_error ("chdir newroot");
@@ -1998,9 +1480,6 @@ main (int    argc,
     die_with_error ("chroot /newroot");
   if (chdir ("/") != 0)
     die_with_error ("chdir /");
-
-  /* All privileged ops are done now, so drop it */
-  drop_privs ();
 
   if (opt_block_fd != -1)
     {
