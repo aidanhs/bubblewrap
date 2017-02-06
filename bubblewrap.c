@@ -37,10 +37,6 @@
 #include "utils.h"
 #include "bind-mount.h"
 
-#ifndef CLONE_NEWCGROUP
-#define CLONE_NEWCGROUP 0x02000000 /* New cgroup namespace */
-#endif
-
 /* Globals to avoid having to use getuid(), since the uid/gid changes during runtime */
 static uid_t real_uid;
 static gid_t real_gid;
@@ -49,18 +45,12 @@ static const char *host_tty_dev;
 static int proc_fd = -1;
 
 char *opt_chdir_path = NULL;
-bool opt_unshare_pid = FALSE;
-bool opt_unshare_ipc = FALSE;
-bool opt_unshare_uts = FALSE;
-bool opt_unshare_cgroup = FALSE;
-bool opt_unshare_cgroup_try = FALSE;
 bool opt_needs_devpts = FALSE;
 bool opt_new_session = FALSE;
 int opt_sync_fd = -1;
 int opt_block_fd = -1;
 int opt_info_fd = -1;
 int opt_seccomp_fd = -1;
-char *opt_sandbox_hostname = NULL;
 
 typedef enum {
   SETUP_BIND_MOUNT,
@@ -76,7 +66,6 @@ typedef enum {
   SETUP_MAKE_RO_BIND_FILE,
   SETUP_MAKE_SYMLINK,
   SETUP_REMOUNT_RO_NO_RECURSIVE,
-  SETUP_SET_HOSTNAME,
 } SetupOpType;
 
 typedef enum {
@@ -115,7 +104,6 @@ enum {
   PRIV_SEP_OP_DEVPTS_MOUNT,
   PRIV_SEP_OP_MQUEUE_MOUNT,
   PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE,
-  PRIV_SEP_OP_SET_HOSTNAME,
 };
 
 typedef struct
@@ -168,12 +156,6 @@ usage (int ecode, FILE *out)
            "    --help                       Print this help\n"
            "    --version                    Print version\n"
            "    --args FD                    Parse nul-separated args from FD\n"
-           "    --unshare-ipc                Create new ipc namespace\n"
-           "    --unshare-pid                Create new pid namespace\n"
-           "    --unshare-uts                Create new uts namespace\n"
-           "    --unshare-cgroup             Create new cgroup namespace\n"
-           "    --unshare-cgroup-try         Create new cgroup namespace if possible else continue by skipping it\n"
-           "    --hostname NAME              Custom hostname in the sandbox (requires --unshare-uts)\n"
            "    --chdir DIR                  Change directory to DIR\n"
            "    --setenv VAR VALUE           Set an environment variable\n"
            "    --unsetenv VAR               Unset an environment variable\n"
@@ -471,15 +453,6 @@ privileged_op (uint32_t    op,
         die_with_error ("Can't mount mqueue on %s", arg1);
       break;
 
-    case PRIV_SEP_OP_SET_HOSTNAME:
-      /* This is checked at the start, but lets verify it here in case
-         something manages to send hacked priv-sep operation requests. */
-      if (!opt_unshare_uts)
-        die ("Refusing to set hostname in original namespace");
-      if (sethostname (arg1, strlen(arg1)) != 0)
-        die_with_error ("Can't set hostname to %s", arg1);
-      break;
-
     default:
       die ("Unexpected privileged op %d", op);
     }
@@ -490,7 +463,7 @@ privileged_op (uint32_t    op,
  * privileged_op_socket.
  */
 static void
-setup_newroot (bool unshare_pid)
+setup_newroot (void)
 {
   SetupOp *op;
 
@@ -545,31 +518,8 @@ setup_newroot (bool unshare_pid)
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          if (unshare_pid)
-            {
-              /* Our own procfs */
-              privileged_op (PRIV_SEP_OP_PROC_MOUNT, 0,
-                             dest, NULL);
-            }
-          else
-            {
-              /* Use system procfs, as we share pid namespace anyway */
-              privileged_op (PRIV_SEP_OP_BIND_MOUNT, 0,
-                             "oldroot/proc", dest);
-            }
-
-          /* There are a bunch of weird old subdirs of /proc that could potentially be
-             problematic (for instance /proc/sysrq-trigger lets you shut down the machine
-             if you have write access). We should not have access to these as a non-privileged
-             user, but lets cover them anyway just to make sure */
-          const char *cover_proc_dirs[] = { "sys", "sysrq-trigger", "irq", "bus" };
-          for (i = 0; i < N_ELEMENTS (cover_proc_dirs); i++)
-            {
-              cleanup_free char *subdir = strconcat3 (dest, "/", cover_proc_dirs[i]);
-              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_READONLY,
-                             subdir, subdir);
-            }
-
+          privileged_op (PRIV_SEP_OP_PROC_MOUNT, 0,
+                         dest, NULL);
           break;
 
         case SETUP_MOUNT_DEV:
@@ -706,11 +656,6 @@ setup_newroot (bool unshare_pid)
             die_with_error ("Can't make symlink at %s", op->dest);
           break;
 
-        case SETUP_SET_HOSTNAME:
-          privileged_op (PRIV_SEP_OP_SET_HOSTNAME, 0,
-                         op->dest, NULL);
-          break;
-
         default:
           die ("Unexpected type %d", op->type);
         }
@@ -845,27 +790,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--unshare-ipc") == 0)
-        {
-          opt_unshare_ipc = TRUE;
-        }
-      else if (strcmp (arg, "--unshare-pid") == 0)
-        {
-          opt_unshare_pid = TRUE;
-        }
-      else if (strcmp (arg, "--unshare-uts") == 0)
-        {
-          opt_unshare_uts = TRUE;
-        }
-      else if (strcmp (arg, "--unshare-cgroup") == 0)
-        {
-          opt_unshare_cgroup = TRUE;
-        }
-      else if (strcmp (arg, "--unshare-cgroup-try") == 0)
-        {
-          opt_unshare_cgroup_try = TRUE;
-        }
-      /* End --share variants, other arguments begin */
       else if (strcmp (arg, "--chdir") == 0)
         {
           if (argc < 2)
@@ -1142,20 +1066,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--hostname") == 0)
-        {
-          if (argc < 2)
-            die ("--hostname takes an argument");
-
-          op = setup_op_new (SETUP_SET_HOSTNAME);
-          op->dest = argv[1];
-          op->flags = NO_CREATE_DEST;
-
-          opt_sandbox_hostname = argv[1];
-
-          argv += 1;
-          argc -= 1;
-        }
       else if (strcmp (arg, "--new-session") == 0)
         {
           opt_new_session = TRUE;
@@ -1198,7 +1108,6 @@ main (int    argc,
   int event_fd = -1;
   int child_wait_fd = -1;
   const char *new_cwd;
-  struct stat sbuf;
   uint64_t val;
   int res UNUSED;
   cleanup_free char *seccomp_data = NULL;
@@ -1237,9 +1146,6 @@ main (int    argc,
 
   __debug__ (("Creating root mount point\n"));
 
-  if (!opt_unshare_uts && opt_sandbox_hostname != NULL)
-    die ("Specifying --hostname requires --unshare-uts");
-
   /* We need to read stuff from proc during the pivot_root dance, etc.
      Lets keep a fd to it open */
   proc_fd = open ("/proc", O_RDONLY | O_PATH);
@@ -1259,37 +1165,10 @@ main (int    argc,
 
   __debug__ (("creating new namespace\n"));
 
-  if (opt_unshare_pid)
-    {
-      event_fd = eventfd (0, EFD_CLOEXEC | EFD_NONBLOCK);
-      if (event_fd == -1)
-        die_with_error ("eventfd()");
-    }
-
   /* We block sigchild here so that we can use signalfd in the monitor. */
   block_sigchild ();
 
   clone_flags = SIGCHLD | CLONE_NEWNS;
-  if (opt_unshare_pid)
-    clone_flags |= CLONE_NEWPID;
-  if (opt_unshare_ipc)
-    clone_flags |= CLONE_NEWIPC;
-  if (opt_unshare_uts)
-    clone_flags |= CLONE_NEWUTS;
-  if (opt_unshare_cgroup)
-    {
-      if (stat ("/proc/self/ns/cgroup", &sbuf))
-        {
-          if (errno == ENOENT)
-            die ("Cannot create new cgroup namespace because the kernel does not support it");
-          else
-            die_with_error ("stat on /proc/self/ns/cgroup failed");
-        }
-      clone_flags |= CLONE_NEWCGROUP;
-    }
-  if (opt_unshare_cgroup_try)
-    if (!stat ("/proc/self/ns/cgroup", &sbuf))
-      clone_flags |= CLONE_NEWCGROUP;
 
   child_wait_fd = eventfd (0, EFD_CLOEXEC);
   if (child_wait_fd == -1)
@@ -1386,7 +1265,7 @@ main (int    argc,
   if (chdir ("/") != 0)
     die_with_error ("chdir / (base path)");
 
-  setup_newroot (opt_unshare_pid);
+  setup_newroot ();
 
   /* The old root better be rprivate or we will send unmount events to the parent namespace */
   if (mount ("oldroot", "oldroot", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
@@ -1456,7 +1335,7 @@ main (int    argc,
 
   __debug__ (("forking for child\n"));
 
-  if (opt_unshare_pid || lock_files != NULL || opt_sync_fd != -1)
+  if (lock_files != NULL || opt_sync_fd != -1)
     {
       /* We have to have a pid 1 in the pid namespace, because
        * otherwise we'll get a bunch of zombies as nothing reaps
