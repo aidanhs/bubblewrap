@@ -109,7 +109,6 @@ static LockFile *lock_files = NULL;
 static LockFile *last_lock_file = NULL;
 
 enum {
-  PRIV_SEP_OP_DONE,
   PRIV_SEP_OP_BIND_MOUNT,
   PRIV_SEP_OP_PROC_MOUNT,
   PRIV_SEP_OP_TMPFS_MOUNT,
@@ -430,74 +429,13 @@ get_oldroot_path (const char *path)
 }
 
 static void
-privileged_op (int         privileged_op_socket,
-               uint32_t    op,
+privileged_op (uint32_t    op,
                uint32_t    flags,
                const char *arg1,
                const char *arg2)
 {
-  if (privileged_op_socket != -1)
-    {
-      uint32_t buffer[2048];  /* 8k, but is int32 to guarantee nice alignment */
-      PrivSepOp *op_buffer = (PrivSepOp *) buffer;
-      size_t buffer_size = sizeof (PrivSepOp);
-      uint32_t arg1_offset = 0, arg2_offset = 0;
-
-      /* We're unprivileged, send this request to the privileged part */
-
-      if (arg1 != NULL)
-        {
-          arg1_offset = buffer_size;
-          buffer_size += strlen (arg1) + 1;
-        }
-      if (arg2 != NULL)
-        {
-          arg2_offset = buffer_size;
-          buffer_size += strlen (arg2) + 1;
-        }
-
-      if (buffer_size >= sizeof (buffer))
-        die ("privilege separation operation to large");
-
-      op_buffer->op = op;
-      op_buffer->flags = flags;
-      op_buffer->arg1_offset = arg1_offset;
-      op_buffer->arg2_offset = arg2_offset;
-      if (arg1 != NULL)
-        strcpy ((char *) buffer + arg1_offset, arg1);
-      if (arg2 != NULL)
-        strcpy ((char *) buffer + arg2_offset, arg2);
-
-      if (write (privileged_op_socket, buffer, buffer_size) != buffer_size)
-        die ("Can't write to privileged_op_socket");
-
-      if (read (privileged_op_socket, buffer, 1) != 1)
-        die ("Can't read from privileged_op_socket");
-
-      return;
-    }
-
-  /*
-   * This runs a privileged request for the unprivileged setup
-   * code. Note that since the setup code is unprivileged it is not as
-   * trusted, so we need to verify that all requests only affect the
-   * child namespace as set up by the privileged parts of the setup,
-   * and that all the code is very careful about handling input.
-   *
-   * This means:
-   *  * Bind mounts are safe, since we always use filesystem namespace. They
-   *     must be recursive though, as otherwise you can use a non-recursive bind
-   *     mount to access an otherwise over-mounted mountpoint.
-   *  * Mounting proc, tmpfs, mqueue, devpts in the child namespace is assumed to
-   *    be safe.
-   *  * Remounting RO (even non-recursive) is safe because it decreases privileges.
-   *  * sethostname() is safe only if we set up a UTS namespace
-   */
   switch (op)
     {
-    case PRIV_SEP_OP_DONE:
-      break;
-
     case PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE:
       if (bind_mount (proc_fd, NULL, arg2, BIND_READONLY) != 0)
         die_with_error ("Can't remount readonly on %s", arg2);
@@ -552,8 +490,7 @@ privileged_op (int         privileged_op_socket,
  * privileged_op_socket.
  */
 static void
-setup_newroot (bool unshare_pid,
-               int  privileged_op_socket)
+setup_newroot (bool unshare_pid)
 {
   SetupOp *op;
 
@@ -594,16 +531,14 @@ setup_newroot (bool unshare_pid,
           else if (ensure_file (dest, 0666) != 0)
             die_with_error ("Can't create file at %s", op->dest);
 
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_BIND_MOUNT,
+          privileged_op (PRIV_SEP_OP_BIND_MOUNT,
                          (op->type == SETUP_RO_BIND_MOUNT ? BIND_READONLY : 0) |
                          (op->type == SETUP_DEV_BIND_MOUNT ? BIND_DEVICES : 0),
                          source, dest);
           break;
 
         case SETUP_REMOUNT_RO_NO_RECURSIVE:
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE, BIND_READONLY, NULL, dest);
+          privileged_op (PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE, BIND_READONLY, NULL, dest);
           break;
 
         case SETUP_MOUNT_PROC:
@@ -613,15 +548,13 @@ setup_newroot (bool unshare_pid,
           if (unshare_pid)
             {
               /* Our own procfs */
-              privileged_op (privileged_op_socket,
-                             PRIV_SEP_OP_PROC_MOUNT, 0,
+              privileged_op (PRIV_SEP_OP_PROC_MOUNT, 0,
                              dest, NULL);
             }
           else
             {
               /* Use system procfs, as we share pid namespace anyway */
-              privileged_op (privileged_op_socket,
-                             PRIV_SEP_OP_BIND_MOUNT, 0,
+              privileged_op (PRIV_SEP_OP_BIND_MOUNT, 0,
                              "oldroot/proc", dest);
             }
 
@@ -633,8 +566,7 @@ setup_newroot (bool unshare_pid,
           for (i = 0; i < N_ELEMENTS (cover_proc_dirs); i++)
             {
               cleanup_free char *subdir = strconcat3 (dest, "/", cover_proc_dirs[i]);
-              privileged_op (privileged_op_socket,
-                             PRIV_SEP_OP_BIND_MOUNT, BIND_READONLY,
+              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_READONLY,
                              subdir, subdir);
             }
 
@@ -644,8 +576,7 @@ setup_newroot (bool unshare_pid,
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_TMPFS_MOUNT, 0,
+          privileged_op (PRIV_SEP_OP_TMPFS_MOUNT, 0,
                          dest, NULL);
 
           static const char *const devnodes[] = { "null", "zero", "full", "random", "urandom", "tty" };
@@ -655,8 +586,7 @@ setup_newroot (bool unshare_pid,
               cleanup_free char *node_src = strconcat ("/oldroot/dev/", devnodes[i]);
               if (create_file (node_dest, 0666, NULL) != 0)
                 die_with_error ("Can't create file %s/%s", op->dest, devnodes[i]);
-              privileged_op (privileged_op_socket,
-                             PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
+              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
                              node_src, node_dest);
             }
 
@@ -679,8 +609,7 @@ setup_newroot (bool unshare_pid,
 
             if (mkdir (pts, 0755) == -1)
               die_with_error ("Can't create %s/devpts", op->dest);
-            privileged_op (privileged_op_socket,
-                           PRIV_SEP_OP_DEVPTS_MOUNT, BIND_DEVICES,
+            privileged_op (PRIV_SEP_OP_DEVPTS_MOUNT, BIND_DEVICES,
                            pts, NULL);
 
             if (symlink ("pts/ptmx", ptmx) != 0)
@@ -700,8 +629,7 @@ setup_newroot (bool unshare_pid,
               if (create_file (dest_console, 0666, NULL) != 0)
                 die_with_error ("creating %s/console", op->dest);
 
-              privileged_op (privileged_op_socket,
-                             PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
+              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
                              src_tty_dev, dest_console);
             }
 
@@ -711,8 +639,7 @@ setup_newroot (bool unshare_pid,
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_TMPFS_MOUNT, 0,
+          privileged_op (PRIV_SEP_OP_TMPFS_MOUNT, 0,
                          dest, NULL);
           break;
 
@@ -720,8 +647,7 @@ setup_newroot (bool unshare_pid,
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_MQUEUE_MOUNT, 0,
+          privileged_op (PRIV_SEP_OP_MQUEUE_MOUNT, 0,
                          dest, NULL);
           break;
 
@@ -764,8 +690,7 @@ setup_newroot (bool unshare_pid,
             if (ensure_file (dest, 0666) != 0)
               die_with_error ("Can't create file at %s", op->dest);
 
-            privileged_op (privileged_op_socket,
-                           PRIV_SEP_OP_BIND_MOUNT,
+            privileged_op (PRIV_SEP_OP_BIND_MOUNT,
                            (op->type == SETUP_MAKE_RO_BIND_FILE ? BIND_READONLY : 0),
                            tempfile, dest);
 
@@ -782,8 +707,7 @@ setup_newroot (bool unshare_pid,
           break;
 
         case SETUP_SET_HOSTNAME:
-          privileged_op (privileged_op_socket,
-                         PRIV_SEP_OP_SET_HOSTNAME, 0,
+          privileged_op (PRIV_SEP_OP_SET_HOSTNAME, 0,
                          op->dest, NULL);
           break;
 
@@ -791,8 +715,6 @@ setup_newroot (bool unshare_pid,
           die ("Unexpected type %d", op->type);
         }
     }
-  privileged_op (privileged_op_socket,
-                 PRIV_SEP_OP_DONE, 0, NULL, NULL);
 }
 
 /* We need to resolve relative symlinks in the sandbox before we
@@ -1464,7 +1386,7 @@ main (int    argc,
   if (chdir ("/") != 0)
     die_with_error ("chdir / (base path)");
 
-  setup_newroot (opt_unshare_pid, -1);
+  setup_newroot (opt_unshare_pid);
 
   /* The old root better be rprivate or we will send unmount events to the parent namespace */
   if (mount ("oldroot", "oldroot", NULL, MS_REC | MS_PRIVATE, NULL) != 0)
