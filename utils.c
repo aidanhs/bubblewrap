@@ -19,9 +19,6 @@
 
 #include "utils.h"
 #include <sys/syscall.h>
-#ifdef HAVE_SELINUX
-#include <selinux/selinux.h>
-#endif
 
 void
 die_with_error (const char *format, ...)
@@ -52,20 +49,6 @@ die (const char *format, ...)
   fprintf (stderr, "\n");
 
   exit (1);
-}
-
-void
-die_unless_label_valid (const char *label)
-{
-#ifdef HAVE_SELINUX
-  if (is_selinux_enabled () == 1)
-    {
-      if (security_check_context ((security_context_t) label) < 0)
-        die_with_error ("invalid label %s", label);
-      return;
-    }
-#endif
-  die ("labeling not supported on this system");
 }
 
 void
@@ -669,41 +652,4 @@ pivot_root (const char * new_root, const char * put_old)
   errno = ENOSYS;
   return -1;
 #endif
-}
-
-char *
-label_mount (const char *opt, const char *mount_label)
-{
-#ifdef HAVE_SELINUX
-  if (mount_label)
-    {
-      if (opt)
-        return xasprintf ("%s,context=\"%s\"", opt, mount_label);
-      else
-        return xasprintf ("context=\"%s\"", mount_label);
-    }
-#endif
-  if (opt)
-    return xstrdup (opt);
-  return NULL;
-}
-
-int
-label_create_file (const char *file_label)
-{
-#ifdef HAVE_SELINUX
-  if (is_selinux_enabled () > 0 && file_label)
-    return setfscreatecon ((security_context_t) file_label);
-#endif
-  return 0;
-}
-
-int
-label_exec (const char *exec_label)
-{
-#ifdef HAVE_SELINUX
-  if (is_selinux_enabled () > 0 && exec_label)
-    return setexeccon ((security_context_t) exec_label);
-#endif
-  return 0;
 }
