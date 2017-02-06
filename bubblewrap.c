@@ -35,7 +35,6 @@
 #include <linux/filter.h>
 
 #include "utils.h"
-#include "network.h"
 #include "bind-mount.h"
 
 #ifndef CLONE_NEWCGROUP
@@ -57,7 +56,6 @@ bool opt_unshare_user = FALSE;
 bool opt_unshare_user_try = FALSE;
 bool opt_unshare_pid = FALSE;
 bool opt_unshare_ipc = FALSE;
-bool opt_unshare_net = FALSE;
 bool opt_unshare_uts = FALSE;
 bool opt_unshare_cgroup = FALSE;
 bool opt_unshare_cgroup_try = FALSE;
@@ -178,13 +176,10 @@ usage (int ecode, FILE *out)
            "    --help                       Print this help\n"
            "    --version                    Print version\n"
            "    --args FD                    Parse nul-separated args from FD\n"
-           "    --unshare-all                Unshare every namespace we support by default\n"
-           "    --share-net                  Retain the network namespace (can only combine with --unshare-all)\n"
            "    --unshare-user               Create new user namespace (may be automatically implied if not setuid)\n"
            "    --unshare-user-try           Create new user namespace if possible else continue by skipping it\n"
            "    --unshare-ipc                Create new ipc namespace\n"
            "    --unshare-pid                Create new pid namespace\n"
-           "    --unshare-net                Create new network namespace\n"
            "    --unshare-uts                Create new uts namespace\n"
            "    --unshare-cgroup             Create new cgroup namespace\n"
            "    --unshare-cgroup-try         Create new cgroup namespace if possible else continue by skipping it\n"
@@ -1211,16 +1206,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--unshare-all") == 0)
-        {
-          /* Keep this in order with the older (legacy) --unshare arguments,
-           * we use the --try variants of user and cgroup, since we want
-           * to support systems/kernels without support for those.
-           */
-          opt_unshare_user_try = opt_unshare_ipc = opt_unshare_pid =
-            opt_unshare_uts = opt_unshare_cgroup_try =
-            opt_unshare_net = TRUE;
-        }
       /* Begin here the older individual --unshare variants */
       else if (strcmp (arg, "--unshare-user") == 0)
         {
@@ -1238,10 +1223,6 @@ parse_args_recurse (int    *argcp,
         {
           opt_unshare_pid = TRUE;
         }
-      else if (strcmp (arg, "--unshare-net") == 0)
-        {
-          opt_unshare_net = TRUE;
-        }
       else if (strcmp (arg, "--unshare-uts") == 0)
         {
           opt_unshare_uts = TRUE;
@@ -1253,11 +1234,6 @@ parse_args_recurse (int    *argcp,
       else if (strcmp (arg, "--unshare-cgroup-try") == 0)
         {
           opt_unshare_cgroup_try = TRUE;
-        }
-      /* Begin here the newer --share variants */
-      else if (strcmp (arg, "--share-net") == 0)
-        {
-          opt_unshare_net = FALSE;
         }
       /* End --share variants, other arguments begin */
       else if (strcmp (arg, "--chdir") == 0)
@@ -1772,8 +1748,6 @@ main (int    argc,
     clone_flags |= CLONE_NEWUSER;
   if (opt_unshare_pid)
     clone_flags |= CLONE_NEWPID;
-  if (opt_unshare_net)
-    clone_flags |= CLONE_NEWNET;
   if (opt_unshare_ipc)
     clone_flags |= CLONE_NEWIPC;
   if (opt_unshare_uts)
@@ -1883,9 +1857,6 @@ main (int    argc,
    * the user uid, which makes e.g. fuse access work.
    */
   switch_to_user_with_privs ();
-
-  if (opt_unshare_net)
-    loopback_setup (); /* Will exit if unsuccessful */
 
   ns_uid = opt_sandbox_uid;
   ns_gid = opt_sandbox_gid;
