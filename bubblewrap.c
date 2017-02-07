@@ -31,7 +31,6 @@
 #include <sys/capability.h>
 #include <sys/prctl.h>
 #include <linux/sched.h>
-#include <linux/seccomp.h>
 #include <linux/filter.h>
 
 #include "utils.h"
@@ -50,7 +49,6 @@ bool opt_new_session = FALSE;
 int opt_sync_fd = -1;
 int opt_block_fd = -1;
 int opt_info_fd = -1;
-int opt_seccomp_fd = -1;
 
 typedef enum {
   SETUP_BIND_MOUNT,
@@ -174,7 +172,6 @@ usage (int ecode, FILE *out)
            "    --bind-data FD DEST          Copy from FD to file which is bind-mounted on DEST\n"
            "    --ro-bind-data FD DEST       Copy from FD to file which is readonly bind-mounted on DEST\n"
            "    --symlink SRC DEST           Create symlink at DEST with target SRC\n"
-           "    --seccomp FD                 Load and use seccomp rules from FD\n"
            "    --block-fd FD                Block on FD until some data to read is available\n"
            "    --info-fd FD                 Write information about the running container to FD\n"
            "    --new-session                Create a new terminal session\n"
@@ -336,7 +333,7 @@ monitor_child (int event_fd, pid_t child_pid)
  * When there are no other processes in the sandbox the wait will return
  * ECHILD, and we then exit pid 1 to clean up the sandbox. */
 static int
-do_init (int event_fd, pid_t initial_pid, struct sock_fprog *seccomp_prog)
+do_init (int event_fd, pid_t initial_pid)
 {
   int initial_exit_status = 1;
   LockFile *lock;
@@ -359,10 +356,6 @@ do_init (int event_fd, pid_t initial_pid, struct sock_fprog *seccomp_prog)
 
       /* Keep fd open to hang on to lock */
     }
-
-  if (seccomp_prog != NULL &&
-      prctl (PR_SET_SECCOMP, SECCOMP_MODE_FILTER, seccomp_prog) != 0)
-    die_with_error ("prctl(PR_SET_SECCOMP)");
 
   while (TRUE)
     {
@@ -1029,23 +1022,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--seccomp") == 0)
-        {
-          int the_fd;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--seccomp takes an argument");
-
-          the_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          opt_seccomp_fd = the_fd;
-
-          argv += 1;
-          argc -= 1;
-        }
       else if (strcmp (arg, "--setenv") == 0)
         {
           if (argc < 3)
@@ -1110,9 +1086,6 @@ main (int    argc,
   const char *new_cwd;
   uint64_t val;
   int res UNUSED;
-  cleanup_free char *seccomp_data = NULL;
-  size_t seccomp_len;
-  struct sock_fprog seccomp_prog;
 
   real_uid = getuid ();
   real_gid = getgid ();
@@ -1289,21 +1262,6 @@ main (int    argc,
       close (opt_block_fd);
     }
 
-  if (opt_seccomp_fd != -1)
-    {
-      seccomp_data = load_file_data (opt_seccomp_fd, &seccomp_len);
-      if (seccomp_data == NULL)
-        die_with_error ("Can't read seccomp data");
-
-      if (seccomp_len % 8 != 0)
-        die ("Invalid seccomp data, must be multiple of 8");
-
-      seccomp_prog.len = seccomp_len / 8;
-      seccomp_prog.filter = (struct sock_filter *) seccomp_data;
-
-      close (opt_seccomp_fd);
-    }
-
   umask (old_umask);
 
   new_cwd = "/";
@@ -1365,7 +1323,7 @@ main (int    argc,
             fdwalk (proc_fd, close_extra_fds, dont_close);
           }
 
-          return do_init (event_fd, pid, seccomp_data != NULL ? &seccomp_prog : NULL);
+          return do_init (event_fd, pid);
         }
     }
 
@@ -1379,10 +1337,6 @@ main (int    argc,
 
   /* We want sigchild in the child */
   unblock_sigchild ();
-
-  if (seccomp_data != NULL &&
-      prctl (PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &seccomp_prog) != 0)
-    die_with_error ("prctl(PR_SET_SECCOMP)");
 
   if (execvp (argv[0], argv) == -1)
     die_with_error ("execvp %s", argv[0]);
