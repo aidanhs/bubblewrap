@@ -16,7 +16,109 @@
  *
  */
 
-#include "config.h"
+/* config.h.  Generated from config.h.in by configure.  */
+/* config.h.in.  Generated from configure.ac by autoheader.  */
+
+/* Define if userns should be used by default in suid mode */
+/* #undef ENABLE_REQUIRE_USERNS */
+
+/* Define to 1 if you have the <inttypes.h> header file. */
+#define HAVE_INTTYPES_H 1
+
+/* Define to 1 if you have the <memory.h> header file. */
+#define HAVE_MEMORY_H 1
+
+/* Define if SELinux is available */
+/* #undef HAVE_SELINUX */
+
+/* Define to 1 if you have the <stdint.h> header file. */
+#define HAVE_STDINT_H 1
+
+/* Define to 1 if you have the <stdlib.h> header file. */
+#define HAVE_STDLIB_H 1
+
+/* Define to 1 if you have the <strings.h> header file. */
+#define HAVE_STRINGS_H 1
+
+/* Define to 1 if you have the <string.h> header file. */
+#define HAVE_STRING_H 1
+
+/* Define to 1 if you have the <sys/capability.h> header file. */
+#define HAVE_SYS_CAPABILITY_H 1
+
+/* Define to 1 if you have the <sys/stat.h> header file. */
+#define HAVE_SYS_STAT_H 1
+
+/* Define to 1 if you have the <sys/types.h> header file. */
+#define HAVE_SYS_TYPES_H 1
+
+/* Define to 1 if you have the <unistd.h> header file. */
+#define HAVE_UNISTD_H 1
+
+/* Define to the address where bug reports for this package should be sent. */
+#define PACKAGE_BUGREPORT "atomic-devel@projectatomic.io"
+
+/* Define to the full name of this package. */
+#define PACKAGE_NAME "bubblewrap"
+
+/* Define to the full name and version of this package. */
+#define PACKAGE_STRING "bubblewrap 0.1.7"
+
+/* Define to the one symbol short name of this package. */
+#define PACKAGE_TARNAME "bubblewrap"
+
+/* Define to the home page for this package. */
+#define PACKAGE_URL ""
+
+/* Define to the version of this package. */
+#define PACKAGE_VERSION "0.1.7"
+
+/* Define to 1 if you have the ANSI C header files. */
+#define STDC_HEADERS 1
+
+/* Enable extensions on AIX 3, Interix.  */
+#ifndef _ALL_SOURCE
+# define _ALL_SOURCE 1
+#endif
+/* Enable GNU extensions on systems that have them.  */
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE 1
+#endif
+/* Enable threading extensions on Solaris.  */
+#ifndef _POSIX_PTHREAD_SEMANTICS
+# define _POSIX_PTHREAD_SEMANTICS 1
+#endif
+/* Enable extensions on HP NonStop.  */
+#ifndef _TANDEM_SOURCE
+# define _TANDEM_SOURCE 1
+#endif
+/* Enable general extensions on Solaris.  */
+#ifndef __EXTENSIONS__
+# define __EXTENSIONS__ 1
+#endif
+
+
+/* Enable large inode numbers on Mac OS X 10.5.  */
+#ifndef _DARWIN_USE_64_BIT_INODE
+# define _DARWIN_USE_64_BIT_INODE 1
+#endif
+
+/* Number of bits in a file offset, on hosts where this is settable. */
+/* #undef _FILE_OFFSET_BITS */
+
+/* Define for large files, on AIX-style hosts. */
+/* #undef _LARGE_FILES */
+
+/* Define to 1 if on MINIX. */
+/* #undef _MINIX */
+
+/* Define to 2 if the system does not provide POSIX.1 features except with
+   this defined. */
+/* #undef _POSIX_1_SOURCE */
+
+/* Define to 1 if you need to in order for `stat' and other things to work. */
+/* #undef _POSIX_SOURCE */
+
 
 #include <poll.h>
 #include <sched.h>
@@ -33,8 +135,1216 @@
 #include <linux/sched.h>
 #include <linux/filter.h>
 
-#include "utils.h"
-#include "bind-mount.h"
+#include <assert.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+
+#if 0
+#define __debug__(x) printf x
+#else
+#define __debug__(x)
+#endif
+
+#define UNUSED __attribute__((__unused__))
+
+#define N_ELEMENTS(arr) (sizeof (arr) / sizeof ((arr)[0]))
+
+#define TRUE 1
+#define FALSE 0
+typedef int bool;
+
+#define PIPE_READ_END 0
+#define PIPE_WRITE_END 1
+
+void  die_with_error (const char *format,
+                      ...) __attribute__((__noreturn__)) __attribute__((format (printf, 1, 2)));
+void  die (const char *format,
+           ...) __attribute__((__noreturn__)) __attribute__((format (printf, 1, 2)));
+void  die_oom (void) __attribute__((__noreturn__));
+
+void *xmalloc (size_t size);
+void *xcalloc (size_t size);
+void *xrealloc (void  *ptr,
+                size_t size);
+char *xstrdup (const char *str);
+void  strfreev (char **str_array);
+void  xsetenv (const char *name,
+               const char *value,
+               int         overwrite);
+void  xunsetenv (const char *name);
+char *strconcat (const char *s1,
+                 const char *s2);
+char *strconcat3 (const char *s1,
+                  const char *s2,
+                  const char *s3);
+char * xasprintf (const char *format,
+                  ...) __attribute__((format (printf, 1, 2)));
+bool  has_prefix (const char *str,
+                  const char *prefix);
+bool  has_path_prefix (const char *str,
+                       const char *prefix);
+bool  path_equal (const char *path1,
+                  const char *path2);
+int   fdwalk (int                     proc_fd,
+              int                     (*cb)(void *data,
+                                  int fd),
+              void                   *data);
+char *load_file_data (int     fd,
+                      size_t *size);
+char *load_file_at (int         dirfd,
+                    const char *path);
+int   write_file_at (int         dirfd,
+                     const char *path,
+                     const char *content);
+int   write_to_fd (int         fd,
+                   const char *content,
+                   ssize_t     len);
+int   copy_file_data (int sfd,
+                      int dfd);
+int   copy_file (const char *src_path,
+                 const char *dst_path,
+                 mode_t      mode);
+int   create_file (const char *path,
+                   mode_t      mode,
+                   const char *content);
+int   ensure_file (const char *path,
+                   mode_t      mode);
+int   get_file_mode (const char *pathname);
+int   mkdir_with_parents (const char *pathname,
+                          int         mode,
+                          bool        create_last);
+
+/* syscall wrappers */
+int   raw_clone (unsigned long flags,
+                 void         *child_stack);
+int   pivot_root (const char *new_root,
+                  const char *put_old);
+
+static inline void
+cleanup_freep (void *p)
+{
+  void **pp = (void **) p;
+
+  if (*pp)
+    free (*pp);
+}
+
+static inline void
+cleanup_strvp (void *p)
+{
+  void **pp = (void **) p;
+
+  strfreev (*pp);
+}
+
+static inline void
+cleanup_fdp (int *fdp)
+{
+  int fd;
+
+  assert (fdp);
+
+  fd = *fdp;
+  if (fd != -1)
+    (void) close (fd);
+}
+
+#define cleanup_free __attribute__((cleanup (cleanup_freep)))
+#define cleanup_fd __attribute__((cleanup (cleanup_fdp)))
+#define cleanup_strv __attribute__((cleanup (cleanup_strvp)))
+
+static inline void *
+steal_pointer (void *pp)
+{
+  void **ptr = (void **) pp;
+  void *ref;
+
+  ref = *ptr;
+  *ptr = NULL;
+
+  return ref;
+}
+
+/* type safety */
+#define steal_pointer(pp) \
+  (0 ? (*(pp)) : (steal_pointer) (pp))
+
+#include <sys/syscall.h>
+
+void
+die_with_error (const char *format, ...)
+{
+  va_list args;
+  int errsv;
+
+  errsv = errno;
+
+  va_start (args, format);
+  vfprintf (stderr, format, args);
+  va_end (args);
+
+  fprintf (stderr, ": %s\n", strerror (errsv));
+
+  exit (1);
+}
+
+void
+die (const char *format, ...)
+{
+  va_list args;
+
+  va_start (args, format);
+  vfprintf (stderr, format, args);
+  va_end (args);
+
+  fprintf (stderr, "\n");
+
+  exit (1);
+}
+
+void
+die_oom (void)
+{
+  puts ("Out of memory");
+  exit (1);
+}
+
+void *
+xmalloc (size_t size)
+{
+  void *res = malloc (size);
+
+  if (res == NULL)
+    die_oom ();
+  return res;
+}
+
+void *
+xcalloc (size_t size)
+{
+  void *res = calloc (1, size);
+
+  if (res == NULL)
+    die_oom ();
+  return res;
+}
+
+void *
+xrealloc (void *ptr, size_t size)
+{
+  void *res = realloc (ptr, size);
+
+  if (size != 0 && res == NULL)
+    die_oom ();
+  return res;
+}
+
+char *
+xstrdup (const char *str)
+{
+  char *res;
+
+  assert (str != NULL);
+
+  res = strdup (str);
+  if (res == NULL)
+    die_oom ();
+
+  return res;
+}
+
+void
+strfreev (char **str_array)
+{
+  if (str_array)
+    {
+      int i;
+
+      for (i = 0; str_array[i] != NULL; i++)
+        free (str_array[i]);
+
+      free (str_array);
+    }
+}
+
+/* Compares if str has a specific path prefix. This differs
+   from a regular prefix in two ways. First of all there may
+   be multiple slashes separating the path elements, and
+   secondly, if a prefix is matched that has to be en entire
+   path element. For instance /a/prefix matches /a/prefix/foo/bar,
+   but not /a/prefixfoo/bar. */
+bool
+has_path_prefix (const char *str,
+                 const char *prefix)
+{
+  while (TRUE)
+    {
+      /* Skip consecutive slashes to reach next path
+         element */
+      while (*str == '/')
+        str++;
+      while (*prefix == '/')
+        prefix++;
+
+      /* No more prefix path elements? Done! */
+      if (*prefix == 0)
+        return TRUE;
+
+      /* Compare path element */
+      while (*prefix != 0 && *prefix != '/')
+        {
+          if (*str != *prefix)
+            return FALSE;
+          str++;
+          prefix++;
+        }
+
+      /* Matched prefix path element,
+         must be entire str path element */
+      if (*str != '/' && *str != 0)
+        return FALSE;
+    }
+}
+
+bool
+path_equal (const char *path1,
+            const char *path2)
+{
+  while (TRUE)
+    {
+      /* Skip consecutive slashes to reach next path
+         element */
+      while (*path1 == '/')
+        path1++;
+      while (*path2 == '/')
+        path2++;
+
+      /* No more prefix path elements? Done! */
+      if (*path1 == 0 || *path2 == 0)
+        return *path1 == 0 && *path2 == 0;
+
+      /* Compare path element */
+      while (*path1 != 0 && *path1 != '/')
+        {
+          if (*path1 != *path2)
+            return FALSE;
+          path1++;
+          path2++;
+        }
+
+      /* Matched path1 path element, must be entire path element */
+      if (*path2 != '/' && *path2 != 0)
+        return FALSE;
+    }
+}
+
+
+bool
+has_prefix (const char *str,
+            const char *prefix)
+{
+  return strncmp (str, prefix, strlen (prefix)) == 0;
+}
+
+void
+xsetenv (const char *name, const char *value, int overwrite)
+{
+  if (setenv (name, value, overwrite))
+    die ("setenv failed");
+}
+
+void
+xunsetenv (const char *name)
+{
+  if (unsetenv (name))
+    die ("unsetenv failed");
+}
+
+char *
+strconcat (const char *s1,
+           const char *s2)
+{
+  size_t len = 0;
+  char *res;
+
+  if (s1)
+    len += strlen (s1);
+  if (s2)
+    len += strlen (s2);
+
+  res = xmalloc (len + 1);
+  *res = 0;
+  if (s1)
+    strcat (res, s1);
+  if (s2)
+    strcat (res, s2);
+
+  return res;
+}
+
+char *
+strconcat3 (const char *s1,
+            const char *s2,
+            const char *s3)
+{
+  size_t len = 0;
+  char *res;
+
+  if (s1)
+    len += strlen (s1);
+  if (s2)
+    len += strlen (s2);
+  if (s3)
+    len += strlen (s3);
+
+  res = xmalloc (len + 1);
+  *res = 0;
+  if (s1)
+    strcat (res, s1);
+  if (s2)
+    strcat (res, s2);
+  if (s3)
+    strcat (res, s3);
+
+  return res;
+}
+
+char *
+xasprintf (const char *format,
+           ...)
+{
+  char *buffer = NULL;
+  va_list args;
+
+  va_start (args, format);
+  if (vasprintf (&buffer, format, args) == -1)
+    die_oom ();
+  va_end (args);
+
+  return buffer;
+}
+
+int
+fdwalk (int proc_fd, int (*cb)(void *data,
+                               int   fd), void *data)
+{
+  int open_max;
+  int fd;
+  int dfd;
+  int res = 0;
+  DIR *d;
+
+  dfd = openat (proc_fd, "self/fd", O_DIRECTORY | O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
+  if (dfd == -1)
+    return res;
+
+  if ((d = fdopendir (dfd)))
+    {
+      struct dirent *de;
+
+      while ((de = readdir (d)))
+        {
+          long l;
+          char *e = NULL;
+
+          if (de->d_name[0] == '.')
+            continue;
+
+          errno = 0;
+          l = strtol (de->d_name, &e, 10);
+          if (errno != 0 || !e || *e)
+            continue;
+
+          fd = (int) l;
+
+          if ((long) fd != l)
+            continue;
+
+          if (fd == dirfd (d))
+            continue;
+
+          if ((res = cb (data, fd)) != 0)
+            break;
+        }
+
+      closedir (d);
+      return res;
+    }
+
+  open_max = sysconf (_SC_OPEN_MAX);
+
+  for (fd = 0; fd < open_max; fd++)
+    if ((res = cb (data, fd)) != 0)
+      break;
+
+  return res;
+}
+
+/* Sets errno on error (!= 0), ENOSPC on short write */
+int
+write_to_fd (int         fd,
+             const char *content,
+             ssize_t     len)
+{
+  ssize_t res;
+
+  while (len > 0)
+    {
+      res = write (fd, content, len);
+      if (res < 0 && errno == EINTR)
+        continue;
+      if (res <= 0)
+        {
+          if (res == 0) /* Unexpected short write, should not happen when writing to a file */
+            errno = ENOSPC;
+          return -1;
+        }
+      len -= res;
+      content += res;
+    }
+
+  return 0;
+}
+
+/* Sets errno on error (!= 0), ENOSPC on short write */
+int
+write_file_at (int         dirfd,
+               const char *path,
+               const char *content)
+{
+  int fd;
+  bool res;
+  int errsv;
+
+  fd = openat (dirfd, path, O_RDWR | O_CLOEXEC, 0);
+  if (fd == -1)
+    return -1;
+
+  res = 0;
+  if (content)
+    res = write_to_fd (fd, content, strlen (content));
+
+  errsv = errno;
+  close (fd);
+  errno = errsv;
+
+  return res;
+}
+
+/* Sets errno on error (!= 0), ENOSPC on short write */
+int
+create_file (const char *path,
+             mode_t      mode,
+             const char *content)
+{
+  int fd;
+  int res;
+  int errsv;
+
+  fd = creat (path, mode);
+  if (fd == -1)
+    return -1;
+
+  res = 0;
+  if (content)
+    res = write_to_fd (fd, content, strlen (content));
+
+  errsv = errno;
+  close (fd);
+  errno = errsv;
+
+  return res;
+}
+
+int
+ensure_file (const char *path,
+             mode_t      mode)
+{
+  struct stat buf;
+
+  /* We check this ahead of time, otherwise
+     the create file will fail in the read-only
+     case with EROFD instead of EEXIST */
+  if (stat (path, &buf) ==  0 &&
+      S_ISREG (buf.st_mode))
+    return 0;
+
+  if (create_file (path, mode, NULL) != 0 &&  errno != EEXIST)
+    return -1;
+
+  return 0;
+}
+
+
+#define BUFSIZE 8192
+/* Sets errno on error (!= 0), ENOSPC on short write */
+int
+copy_file_data (int sfd,
+                int dfd)
+{
+  char buffer[BUFSIZE];
+  ssize_t bytes_read;
+
+  while (TRUE)
+    {
+      bytes_read = read (sfd, buffer, BUFSIZE);
+      if (bytes_read == -1)
+        {
+          if (errno == EINTR)
+            continue;
+
+          return -1;
+        }
+
+      if (bytes_read == 0)
+        break;
+
+      if (write_to_fd (dfd, buffer, bytes_read) != 0)
+        return -1;
+    }
+
+  return 0;
+}
+
+/* Sets errno on error (!= 0), ENOSPC on short write */
+int
+copy_file (const char *src_path,
+           const char *dst_path,
+           mode_t      mode)
+{
+  int sfd;
+  int dfd;
+  int res;
+  int errsv;
+
+  sfd = open (src_path, O_CLOEXEC | O_RDONLY);
+  if (sfd == -1)
+    return -1;
+
+  dfd = creat (dst_path, mode);
+  if (dfd == -1)
+    {
+      errsv = errno;
+      close (sfd);
+      errno = errsv;
+      return -1;
+    }
+
+  res = copy_file_data (sfd, dfd);
+
+  errsv = errno;
+  close (sfd);
+  close (dfd);
+  errno = errsv;
+
+  return res;
+}
+
+/* Sets errno on error (== NULL),
+ * Always ensures terminating zero */
+char *
+load_file_data (int     fd,
+                size_t *size)
+{
+  cleanup_free char *data = NULL;
+  ssize_t data_read;
+  ssize_t data_len;
+  ssize_t res;
+  int errsv;
+
+  data_read = 0;
+  data_len = 4080;
+  data = xmalloc (data_len);
+
+  do
+    {
+      if (data_len == data_read + 1)
+        {
+          data_len *= 2;
+          data = xrealloc (data, data_len);
+        }
+
+      do
+        res = read (fd, data + data_read, data_len - data_read - 1);
+      while (res < 0 && errno == EINTR);
+
+      if (res < 0)
+        {
+          errsv = errno;
+          close (fd);
+          errno = errsv;
+          return NULL;
+        }
+
+      data_read += res;
+    }
+  while (res > 0);
+
+  data[data_read] = 0;
+
+  if (size)
+    *size = (size_t) data_read;
+
+  return steal_pointer (&data);
+}
+
+/* Sets errno on error (== NULL),
+ * Always ensures terminating zero */
+char *
+load_file_at (int         dirfd,
+              const char *path)
+{
+  int fd;
+  char *data;
+  int errsv;
+
+  fd = openat (dirfd, path, O_CLOEXEC | O_RDONLY);
+  if (fd == -1)
+    return NULL;
+
+  data = load_file_data (fd, NULL);
+
+  errsv = errno;
+  close (fd);
+  errno = errsv;
+
+  return data;
+}
+
+/* Sets errno on error (< 0) */
+int
+get_file_mode (const char *pathname)
+{
+  struct stat buf;
+
+  if (stat (pathname, &buf) !=  0)
+    return -1;
+
+  return buf.st_mode & S_IFMT;
+}
+
+/* Sets errno on error (!= 0) */
+int
+mkdir_with_parents (const char *pathname,
+                    int         mode,
+                    bool        create_last)
+{
+  cleanup_free char *fn = NULL;
+  char *p;
+  struct stat buf;
+
+  if (pathname == NULL || *pathname == '\0')
+    {
+      errno = EINVAL;
+      return -1;
+    }
+
+  fn = xstrdup (pathname);
+
+  p = fn;
+  while (*p == '/')
+    p++;
+
+  do
+    {
+      while (*p && *p != '/')
+        p++;
+
+      if (!*p)
+        p = NULL;
+      else
+        *p = '\0';
+
+      if (!create_last && p == NULL)
+        break;
+
+      if (stat (fn, &buf) !=  0)
+        {
+          if (mkdir (fn, mode) == -1 && errno != EEXIST)
+            return -1;
+        }
+      else if (!S_ISDIR (buf.st_mode))
+        {
+          errno = ENOTDIR;
+          return -1;
+        }
+
+      if (p)
+        {
+          *p++ = '/';
+          while (*p && *p == '/')
+            p++;
+        }
+    }
+  while (p);
+
+  return 0;
+}
+
+int
+raw_clone (unsigned long flags,
+           void         *child_stack)
+{
+#if defined(__s390__) || defined(__CRIS__)
+  /* On s390 and cris the order of the first and second arguments
+   * of the raw clone() system call is reversed. */
+  return (int) syscall (__NR_clone, child_stack, flags);
+#else
+  return (int) syscall (__NR_clone, flags, child_stack);
+#endif
+}
+
+int
+pivot_root (const char * new_root, const char * put_old)
+{
+#ifdef __NR_pivot_root
+  return syscall (__NR_pivot_root, new_root, put_old);
+#else
+  errno = ENOSYS;
+  return -1;
+#endif
+}
+
+
+
+
+
+typedef enum {
+  BIND_READONLY = (1 << 0),
+  BIND_DEVICES = (1 << 2),
+  BIND_RECURSIVE = (1 << 3),
+} bind_option_t;
+
+int bind_mount (int           proc_fd,
+                const char   *src,
+                const char   *dest,
+                bind_option_t options);
+
+static char *
+skip_token (char *line, bool eat_whitespace)
+{
+  while (*line != ' ' && *line != '\n')
+    line++;
+
+  if (eat_whitespace && *line == ' ')
+    line++;
+
+  return line;
+}
+
+static char *
+unescape_inline (char *escaped)
+{
+  char *unescaped, *res;
+  const char *end;
+
+  res = escaped;
+  end = escaped + strlen (escaped);
+
+  unescaped = escaped;
+  while (escaped < end)
+    {
+      if (*escaped == '\\')
+        {
+          *unescaped++ =
+            ((escaped[1] - '0') << 6) |
+            ((escaped[2] - '0') << 3) |
+            ((escaped[3] - '0') << 0);
+          escaped += 4;
+        }
+      else
+        {
+          *unescaped++ = *escaped++;
+        }
+    }
+  *unescaped = 0;
+  return res;
+}
+
+static bool
+match_token (const char *token, const char *token_end, const char *str)
+{
+  while (token != token_end && *token == *str)
+    {
+      token++;
+      str++;
+    }
+  if (token == token_end)
+    return *str == 0;
+
+  return FALSE;
+}
+
+static unsigned long
+decode_mountoptions (const char *options)
+{
+  const char *token, *end_token;
+  int i;
+  unsigned long flags = 0;
+  static const struct  { int   flag;
+                         char *name;
+  } flags_data[] = {
+    { 0, "rw" },
+    { MS_RDONLY, "ro" },
+    { MS_NOSUID, "nosuid" },
+    { MS_NODEV, "nodev" },
+    { MS_NOEXEC, "noexec" },
+    { MS_NOATIME, "noatime" },
+    { MS_NODIRATIME, "nodiratime" },
+    { MS_RELATIME, "relatime" },
+    { 0, NULL }
+  };
+
+  token = options;
+  do
+    {
+      end_token = strchr (token, ',');
+      if (end_token == NULL)
+        end_token = token + strlen (token);
+
+      for (i = 0; flags_data[i].name != NULL; i++)
+        {
+          if (match_token (token, end_token, flags_data[i].name))
+            {
+              flags |= flags_data[i].flag;
+              break;
+            }
+        }
+
+      if (*end_token != 0)
+        token = end_token + 1;
+      else
+        token = NULL;
+    }
+  while (token != NULL);
+
+  return flags;
+}
+
+typedef struct MountInfo MountInfo;
+struct MountInfo {
+  char *mountpoint;
+  unsigned long options;
+};
+
+typedef MountInfo *MountTab;
+
+static void
+mount_tab_free (MountTab tab)
+{
+  int i;
+
+  for (i = 0; tab[i].mountpoint != NULL; i++)
+    free (tab[i].mountpoint);
+  free (tab);
+}
+
+static inline void
+cleanup_mount_tabp (void *p)
+{
+  void **pp = (void **) p;
+
+  if (*pp)
+    mount_tab_free ((MountTab)*pp);
+}
+
+#define cleanup_mount_tab __attribute__((cleanup (cleanup_mount_tabp)))
+
+typedef struct MountInfoLine MountInfoLine;
+struct MountInfoLine {
+  const char *mountpoint;
+  const char *options;
+  bool covered;
+  int id;
+  int parent_id;
+  MountInfoLine *first_child;
+  MountInfoLine *next_sibling;
+};
+
+static unsigned int
+count_lines (const char *data)
+{
+  unsigned int count = 0;
+  const char *p = data;
+
+  while (*p != 0)
+    {
+      if (*p == '\n')
+        count++;
+      p++;
+    }
+
+  /* If missing final newline, add one */
+  if (p > data && *(p-1) != '\n')
+    count++;
+
+  return count;
+}
+
+static int
+count_mounts (MountInfoLine *line)
+{
+  MountInfoLine *child;
+  int res = 0;
+
+  if (!line->covered)
+    res += 1;
+
+  child = line->first_child;
+  while (child != NULL)
+    {
+      res += count_mounts (child);
+      child = child->next_sibling;
+    }
+
+  return res;
+}
+
+static MountInfo *
+collect_mounts (MountInfo *info, MountInfoLine *line)
+{
+  MountInfoLine *child;
+
+  if (!line->covered)
+    {
+      info->mountpoint = xstrdup (line->mountpoint);
+      info->options = decode_mountoptions (line->options);
+      info ++;
+    }
+
+  child = line->first_child;
+  while (child != NULL)
+    {
+      info = collect_mounts (info, child);
+      child = child->next_sibling;
+    }
+
+  return info;
+}
+
+static MountTab
+parse_mountinfo (int  proc_fd,
+                 const char *root_mount)
+{
+  cleanup_free char *mountinfo = NULL;
+  cleanup_free MountInfoLine *lines = NULL;
+  cleanup_free MountInfoLine **by_id = NULL;
+  cleanup_mount_tab MountTab mount_tab = NULL;
+  MountInfo *end_tab;
+  int n_mounts;
+  char *line;
+  int i;
+  int max_id;
+  unsigned int n_lines;
+  int root;
+
+  mountinfo = load_file_at (proc_fd, "self/mountinfo");
+  if (mountinfo == NULL)
+    die_with_error ("Can't open /proc/self/mountinfo");
+
+  n_lines = count_lines (mountinfo);
+  lines = xcalloc (n_lines * sizeof (MountInfoLine));
+
+  max_id = 0;
+  line = mountinfo;
+  i = 0;
+  root = -1;
+  while (*line != 0)
+    {
+      int rc, consumed = 0;
+      unsigned int maj, min;
+      char *end;
+      char *rest;
+      char *mountpoint;
+      char *mountpoint_end;
+      char *options;
+      char *options_end;
+      char *next_line;
+
+      assert (i < n_lines);
+
+      end = strchr (line, '\n');
+      if (end != NULL)
+        {
+          *end = 0;
+          next_line = end + 1;
+        }
+      else
+        next_line = line + strlen (line);
+
+      rc = sscanf (line, "%d %d %u:%u %n", &lines[i].id, &lines[i].parent_id, &maj, &min, &consumed);
+      if (rc != 4)
+        die ("Can't parse mountinfo line");
+      rest = line + consumed;
+
+      rest = skip_token (rest, TRUE); /* mountroot */
+      mountpoint = rest;
+      rest = skip_token (rest, FALSE); /* mountpoint */
+      mountpoint_end = rest++;
+      options = rest;
+      rest = skip_token (rest, FALSE); /* vfs options */
+      options_end = rest;
+
+      *mountpoint_end = 0;
+      lines[i].mountpoint = unescape_inline (mountpoint);
+
+      *options_end = 0;
+      lines[i].options = options;
+
+      if (lines[i].id > max_id)
+        max_id = lines[i].id;
+      if (lines[i].parent_id > max_id)
+        max_id = lines[i].parent_id;
+
+      if (path_equal (lines[i].mountpoint, root_mount))
+        root = i;
+
+      i++;
+      line = next_line;
+    }
+  assert (i == n_lines);
+
+  if (root == -1)
+    {
+      mount_tab = xcalloc (sizeof (MountInfo) * (1));
+      return steal_pointer (&mount_tab);
+    }
+
+  by_id = xcalloc ((max_id + 1) * sizeof (MountInfoLine*));
+  for (i = 0; i < n_lines; i++)
+    by_id[lines[i].id] = &lines[i];
+
+  for (i = 0; i < n_lines; i++)
+    {
+      MountInfoLine *this = &lines[i];
+      MountInfoLine *parent = by_id[this->parent_id];
+      MountInfoLine **to_sibling;
+      MountInfoLine *sibling;
+      bool covered = FALSE;
+
+      if (!has_path_prefix (this->mountpoint, root_mount))
+        continue;
+
+      if (parent == NULL)
+        continue;
+
+      if (strcmp (parent->mountpoint, this->mountpoint) == 0)
+        parent->covered = TRUE;
+
+      to_sibling = &parent->first_child;
+      sibling = parent->first_child;
+      while (sibling != NULL)
+        {
+          /* If this mountpoint is a path prefix of the sibling,
+           * say this->mp=/foo/bar and sibling->mp=/foo, then it is
+           * covered by the sibling, and we drop it. */
+          if (has_path_prefix (this->mountpoint, sibling->mountpoint))
+            {
+              covered = TRUE;
+              break;
+            }
+
+          /* If the sibling is a path prefix of this mount point,
+           * say this->mp=/foo and sibling->mp=/foo/bar, then the sibling
+           * is covered, and we drop it.
+            */
+          if (has_path_prefix (sibling->mountpoint, this->mountpoint))
+            *to_sibling = sibling->next_sibling;
+          else
+            to_sibling = &sibling->next_sibling;
+          sibling = sibling->next_sibling;
+        }
+
+      if (covered)
+          continue;
+
+      *to_sibling = this;
+    }
+
+  n_mounts = count_mounts (&lines[root]);
+  mount_tab = xcalloc (sizeof (MountInfo) * (n_mounts + 1));
+
+  end_tab = collect_mounts (&mount_tab[0], &lines[root]);
+  assert (end_tab == &mount_tab[n_mounts]);
+
+  return steal_pointer (&mount_tab);
+}
+
+int
+bind_mount (int           proc_fd,
+            const char   *src,
+            const char   *dest,
+            bind_option_t options)
+{
+  bool readonly = (options & BIND_READONLY) != 0;
+  bool devices = (options & BIND_DEVICES) != 0;
+  bool recursive = (options & BIND_RECURSIVE) != 0;
+  unsigned long current_flags, new_flags;
+  cleanup_mount_tab MountTab mount_tab = NULL;
+  cleanup_free char *resolved_dest = NULL;
+  int i;
+
+  if (src)
+    {
+      if (mount (src, dest, NULL, MS_MGC_VAL | MS_BIND | (recursive ? MS_REC : 0), NULL) != 0)
+        return 1;
+    }
+
+  /* The mount operation will resolve any symlinks in the destination
+     path, so to find it in the mount table we need to do that too. */
+  resolved_dest = realpath (dest, NULL);
+  if (resolved_dest == NULL)
+    return 2;
+
+  mount_tab = parse_mountinfo (proc_fd, resolved_dest);
+  if (mount_tab[0].mountpoint == NULL)
+    {
+      errno = EINVAL;
+      return 2; /* No mountpoint at dest */
+    }
+
+  assert (path_equal (mount_tab[0].mountpoint, resolved_dest));
+  current_flags = mount_tab[0].options;
+  new_flags = current_flags | (devices ? 0 : MS_NODEV) | MS_NOSUID | (readonly ? MS_RDONLY : 0);
+  if (new_flags != current_flags &&
+      mount ("none", resolved_dest,
+             NULL, MS_MGC_VAL | MS_BIND | MS_REMOUNT | new_flags, NULL) != 0)
+    return 3;
+
+  /* We need to work around the fact that a bind mount does not apply the flags, so we need to manually
+   * apply the flags to all submounts in the recursive case.
+   * Note: This does not apply the flags to mounts which are later propagated into this namespace.
+   */
+  if (recursive)
+    {
+      for (i = 1; mount_tab[i].mountpoint != NULL; i++)
+        {
+          current_flags = mount_tab[i].options;
+          new_flags = current_flags | (devices ? 0 : MS_NODEV) | MS_NOSUID | (readonly ? MS_RDONLY : 0);
+          if (new_flags != current_flags &&
+              mount ("none", mount_tab[i].mountpoint,
+                     NULL, MS_MGC_VAL | MS_BIND | MS_REMOUNT | new_flags, NULL) != 0)
+            {
+              /* If we can't read the mountpoint we can't remount it, but that should
+                 be safe to ignore because its not something the user can access. */
+              if (errno != EACCES)
+                return 5;
+            }
+        }
+    }
+
+  return 0;
+}
+
+
 
 /* Globals to avoid having to use getuid(), since the uid/gid changes during runtime */
 static uid_t real_uid;
