@@ -1668,8 +1668,10 @@ parse_args (int    *argcp,
   *argvp = argv;
 }
 
+int machroot (int argc, char **argv);
+
 int
-main (int    argc,
+machroot (int    argc,
       char **argv)
 {
   mode_t old_umask;
