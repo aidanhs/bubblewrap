@@ -1,5 +1,5 @@
-/* bubblewrap
- * Copyright (C) 2016 Alexander Larsson
+/* machroot
+ * Copyright (C) 2016 Alexander Larsson, Aidan Hobson Sayers
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -47,7 +47,7 @@
 #define HAVE_UNISTD_H 1
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "bubblewrap 0.1.7"
+#define PACKAGE_STRING "machroot 0.1.0"
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
@@ -1321,7 +1321,7 @@ monitor_child (int event_fd, pid_t child_pid)
       while ((died_pid = waitpid (-1, &died_status, WNOHANG)) > 0)
         {
           /* We may be getting sigchild from other children too. For instance if
-             someone created a child process, and then exec:ed bubblewrap. Ignore them */
+             someone created a child process, and then exec:ed machroot. Ignore them */
           if (died_pid == child_pid)
             exit (propagate_exit_status (died_status));
         }
@@ -1723,11 +1723,11 @@ main (int    argc,
 
   /* We need *some* mountpoint where we can mount the root tmpfs.
      We first try in /run, and if that fails, try in /tmp. */
-  base_path = xasprintf ("/run/user/%d/.bubblewrap", real_uid);
+  base_path = xasprintf ("/run/user/%d/.machroot", real_uid);
   if (mkdir (base_path, 0755) && errno != EEXIST)
     {
       free (base_path);
-      base_path = xasprintf ("/tmp/.bubblewrap-%d", real_uid);
+      base_path = xasprintf ("/tmp/.machroot-%d", real_uid);
       if (mkdir (base_path, 0755) && errno != EEXIST)
         die_with_error ("Creating root mountpoint failed");
     }
