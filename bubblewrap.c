@@ -45,7 +45,6 @@ static int proc_fd = -1;
 
 char *opt_chdir_path = NULL;
 bool opt_needs_devpts = FALSE;
-bool opt_new_session = FALSE;
 
 typedef enum {
   SETUP_BIND_MOUNT,
@@ -55,17 +54,8 @@ typedef enum {
   SETUP_MOUNT_DEV,
   SETUP_MOUNT_TMPFS,
   SETUP_MOUNT_MQUEUE,
-  SETUP_MAKE_DIR,
-  SETUP_MAKE_FILE,
-  SETUP_MAKE_BIND_FILE,
-  SETUP_MAKE_RO_BIND_FILE,
-  SETUP_MAKE_SYMLINK,
   SETUP_REMOUNT_RO_NO_RECURSIVE,
 } SetupOpType;
-
-typedef enum {
-  NO_CREATE_DEST = (1 << 0),
-} SetupOpFlag;
 
 typedef struct _SetupOp SetupOp;
 
@@ -75,7 +65,6 @@ struct _SetupOp
   const char *source;
   const char *dest;
   int         fd;
-  SetupOpFlag flags;
   SetupOp    *next;
 };
 
@@ -114,7 +103,6 @@ setup_op_new (SetupOpType type)
 
   op->type = type;
   op->fd = -1;
-  op->flags = 0;
   if (last_op != NULL)
     last_op->next = op;
   else
@@ -133,10 +121,7 @@ usage (int ecode, FILE *out)
   fprintf (out,
            "    --help                       Print this help\n"
            "    --version                    Print version\n"
-           "    --args FD                    Parse nul-separated args from FD\n"
            "    --chdir DIR                  Change directory to DIR\n"
-           "    --setenv VAR VALUE           Set an environment variable\n"
-           "    --unsetenv VAR               Unset an environment variable\n"
            "    --bind SRC DEST              Bind mount the host path SRC on DEST\n"
            "    --dev-bind SRC DEST          Bind mount the host path SRC on DEST, allowing device access\n"
            "    --ro-bind SRC DEST           Bind mount the host path SRC readonly on DEST\n"
@@ -145,12 +130,6 @@ usage (int ecode, FILE *out)
            "    --dev DEST                   Mount new dev on DEST\n"
            "    --tmpfs DEST                 Mount new tmpfs on DEST\n"
            "    --mqueue DEST                Mount new mqueue on DEST\n"
-           "    --dir DEST                   Create dir at DEST\n"
-           "    --file FD DEST               Copy from FD to dest DEST\n"
-           "    --bind-data FD DEST          Copy from FD to file which is bind-mounted on DEST\n"
-           "    --ro-bind-data FD DEST       Copy from FD to file which is readonly bind-mounted on DEST\n"
-           "    --symlink SRC DEST           Create symlink at DEST with target SRC\n"
-           "    --new-session                Create a new terminal session\n"
           );
   exit (ecode);
 }
@@ -381,8 +360,7 @@ setup_newroot (void)
       int source_mode = 0;
       int i;
 
-      if (op->source &&
-          op->type != SETUP_MAKE_SYMLINK)
+      if (op->source)
         {
           source = get_oldroot_path (op->source);
           source_mode = get_file_mode (source);
@@ -390,8 +368,7 @@ setup_newroot (void)
             die_with_error ("Can't get type of source %s", op->source);
         }
 
-      if (op->dest &&
-          (op->flags & NO_CREATE_DEST) == 0)
+      if (op->dest)
         {
           dest = get_newroot_path (op->dest);
           if (mkdir_with_parents (dest, 0755, FALSE) != 0)
@@ -508,61 +485,6 @@ setup_newroot (void)
                          dest, NULL);
           break;
 
-        case SETUP_MAKE_DIR:
-          if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-            die_with_error ("Can't mkdir %s", op->dest);
-
-          break;
-
-        case SETUP_MAKE_FILE:
-          {
-            cleanup_fd int dest_fd = -1;
-
-            dest_fd = creat (dest, 0666);
-            if (dest_fd == -1)
-              die_with_error ("Can't create file %s", op->dest);
-
-            if (copy_file_data (op->fd, dest_fd) != 0)
-              die_with_error ("Can't write data to file %s", op->dest);
-
-            close (op->fd);
-          }
-          break;
-
-        case SETUP_MAKE_BIND_FILE:
-        case SETUP_MAKE_RO_BIND_FILE:
-          {
-            cleanup_fd int dest_fd = -1;
-            char tempfile[] = "/bindfileXXXXXX";
-
-            dest_fd = mkstemp (tempfile);
-            if (dest_fd == -1)
-              die_with_error ("Can't create tmpfile for %s", op->dest);
-
-            if (copy_file_data (op->fd, dest_fd) != 0)
-              die_with_error ("Can't write data to file %s", op->dest);
-
-            close (op->fd);
-
-            if (ensure_file (dest, 0666) != 0)
-              die_with_error ("Can't create file at %s", op->dest);
-
-            privileged_op (PRIV_SEP_OP_BIND_MOUNT,
-                           (op->type == SETUP_MAKE_RO_BIND_FILE ? BIND_READONLY : 0),
-                           tempfile, dest);
-
-            /* Remove the file so we're sure the app can't get to it in any other way.
-               Its outside the container chroot, so it shouldn't be possible, but lets
-               make it really sure. */
-            unlink (tempfile);
-          }
-          break;
-
-        case SETUP_MAKE_SYMLINK:
-          if (symlink (op->source, dest) != 0)
-            die_with_error ("Can't make symlink at %s", op->dest);
-          break;
-
         default:
           die ("Unexpected type %d", op->type);
         }
@@ -600,10 +522,8 @@ resolve_symlinks_in_ops (void)
 
 
 static void
-parse_args_recurse (int    *argcp,
-                    char ***argvp,
-                    bool    in_file,
-                    int    *total_parsed_argc_p)
+parse_args (int    *argcp,
+            char ***argvp)
 {
   SetupOp *op;
   int argc = *argcp;
@@ -620,7 +540,7 @@ parse_args_recurse (int    *argcp,
    */
   static const uint32_t MAX_ARGS = 9000;
 
-  if (*total_parsed_argc_p > MAX_ARGS)
+  if (argc > MAX_ARGS)
     die ("Exceeded maximum number of arguments %u", MAX_ARGS);
 
   while (argc > 0)
@@ -635,67 +555,6 @@ parse_args_recurse (int    *argcp,
         {
           printf ("%s\n", PACKAGE_STRING);
           exit (0);
-        }
-      else if (strcmp (arg, "--args") == 0)
-        {
-          int the_fd;
-          char *endptr;
-          char *data, *p;
-          char *data_end;
-          size_t data_len;
-          cleanup_free char **data_argv = NULL;
-          char **data_argv_copy;
-          int data_argc;
-          int i;
-
-          if (in_file)
-            die ("--args not supported in arguments file");
-
-          if (argc < 2)
-            die ("--args takes an argument");
-
-          the_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          data = load_file_data (the_fd, &data_len);
-          if (data == NULL)
-            die_with_error ("Can't read --args data");
-
-          data_end = data + data_len;
-          data_argc = 0;
-
-          p = data;
-          while (p != NULL && p < data_end)
-            {
-              data_argc++;
-              (*total_parsed_argc_p)++;
-              if (*total_parsed_argc_p > MAX_ARGS)
-                die ("Exceeded maximum number of arguments %u", MAX_ARGS);
-              p = memchr (p, 0, data_end - p);
-              if (p != NULL)
-                p++;
-            }
-
-          data_argv = xcalloc (sizeof (char *) * (data_argc + 1));
-
-          i = 0;
-          p = data;
-          while (p != NULL && p < data_end)
-            {
-              /* Note: load_file_data always adds a nul terminator, so this is safe
-               * even for the last string. */
-              data_argv[i++] = p;
-              p = memchr (p, 0, data_end - p);
-              if (p != NULL)
-                p++;
-            }
-
-          data_argv_copy = data_argv; /* Don't change data_argv, we need to free it */
-          parse_args_recurse (&data_argc, &data_argv_copy, TRUE, total_parsed_argc_p);
-
-          argv += 1;
-          argc -= 1;
         }
       else if (strcmp (arg, "--chdir") == 0)
         {
@@ -795,110 +654,6 @@ parse_args_recurse (int    *argcp,
           argv += 1;
           argc -= 1;
         }
-      else if (strcmp (arg, "--dir") == 0)
-        {
-          if (argc < 2)
-            die ("--dir takes an argument");
-
-          op = setup_op_new (SETUP_MAKE_DIR);
-          op->dest = argv[1];
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--file") == 0)
-        {
-          int file_fd;
-          char *endptr;
-
-          if (argc < 3)
-            die ("--file takes two arguments");
-
-          file_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || file_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          op = setup_op_new (SETUP_MAKE_FILE);
-          op->fd = file_fd;
-          op->dest = argv[2];
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--bind-data") == 0)
-        {
-          int file_fd;
-          char *endptr;
-
-          if (argc < 3)
-            die ("--bind-data takes two arguments");
-
-          file_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || file_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          op = setup_op_new (SETUP_MAKE_BIND_FILE);
-          op->fd = file_fd;
-          op->dest = argv[2];
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--ro-bind-data") == 0)
-        {
-          int file_fd;
-          char *endptr;
-
-          if (argc < 3)
-            die ("--ro-bind-data takes two arguments");
-
-          file_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || file_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          op = setup_op_new (SETUP_MAKE_RO_BIND_FILE);
-          op->fd = file_fd;
-          op->dest = argv[2];
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--symlink") == 0)
-        {
-          if (argc < 3)
-            die ("--symlink takes two arguments");
-
-          op = setup_op_new (SETUP_MAKE_SYMLINK);
-          op->source = argv[1];
-          op->dest = argv[2];
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--setenv") == 0)
-        {
-          if (argc < 3)
-            die ("--setenv takes two arguments");
-
-          xsetenv (argv[1], argv[2], 1);
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--unsetenv") == 0)
-        {
-          if (argc < 2)
-            die ("--unsetenv takes an argument");
-
-          xunsetenv (argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--new-session") == 0)
-        {
-          opt_new_session = TRUE;
-        }
       else if (*arg == '-')
         {
           die ("Unknown option %s", arg);
@@ -914,15 +669,6 @@ parse_args_recurse (int    *argcp,
 
   *argcp = argc;
   *argvp = argv;
-}
-
-static void
-parse_args (int    *argcp,
-            char ***argvp)
-{
-  int total_parsed_argc = *argcp;
-
-  parse_args_recurse (argcp, argvp, FALSE, &total_parsed_argc);
 }
 
 int
@@ -1106,10 +852,6 @@ main (int    argc,
     }
   xsetenv ("PWD", new_cwd, 1);
   free (old_cwd);
-
-  if (opt_new_session &&
-      setsid () == (pid_t) -1)
-    die_with_error ("setsid");
 
   __debug__ (("launch executable %s\n", argv[0]));
 
