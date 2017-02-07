@@ -1120,7 +1120,7 @@ static int proc_fd = -1;
 static char *opt_chdir_path = NULL;
 
 typedef enum {
-  SETUP_BIND_MOUNT,
+  SETUP_BIND_MOUNT = 0,
   SETUP_RO_BIND_MOUNT,
   SETUP_DEV_BIND_MOUNT,
   SETUP_MOUNT_PROC,
@@ -1129,6 +1129,7 @@ typedef enum {
   SETUP_MOUNT_MQUEUE,
   SETUP_REMOUNT_RO_NO_RECURSIVE,
 } SetupOpType;
+static_assert(sizeof(SetupOpType) == 4, "invalid setupop size");
 
 typedef struct _SetupOp SetupOp;
 
@@ -1137,27 +1138,12 @@ struct _SetupOp
   SetupOpType type;
   const char *source;
   const char *dest;
-  SetupOp    *next;
 };
 
-static SetupOp *ops = NULL;
-static SetupOp *last_op = NULL;
+extern SetupOp const *opsvec;
+extern uint64_t opsveclen;
 
-static SetupOp *
-setup_op_new (SetupOpType type)
-{
-  SetupOp *op = xcalloc (sizeof (SetupOp));
-
-  op->type = type;
-  if (last_op != NULL)
-    last_op->next = op;
-  else
-    ops = op;
-
-  last_op = op;
-  return op;
-}
-
+extern SetupOp *setup_op_new (SetupOpType type, const char *source, const char *dest);
 
 static void
 usage (int ecode, FILE *out)
@@ -1345,10 +1331,11 @@ get_oldroot_path (const char *path)
 static void
 setup_newroot (void)
 {
-  SetupOp *op;
+  int i;
 
-  for (op = ops; op != NULL; op = op->next)
+  for (i = 0; i < opsveclen; i++)
     {
+      const SetupOp *op = &opsvec[i];
       cleanup_free char *source = NULL;
       cleanup_free char *dest = NULL;
       int source_mode = 0;
@@ -1487,41 +1474,13 @@ setup_newroot (void)
     }
 }
 
-/* We need to resolve relative symlinks in the sandbox before we
-   chroot so that absolute symlinks are handled correctly. We also
-   need to do this after we've switched to the real uid so that
-   e.g. paths on fuse mounts work */
-static void
-resolve_symlinks_in_ops (void)
-{
-  SetupOp *op;
-
-  for (op = ops; op != NULL; op = op->next)
-    {
-      const char *old_source;
-
-      switch (op->type)
-        {
-        case SETUP_RO_BIND_MOUNT:
-        case SETUP_DEV_BIND_MOUNT:
-        case SETUP_BIND_MOUNT:
-          old_source = op->source;
-          op->source = realpath (old_source, NULL);
-          if (op->source == NULL)
-            die_with_error ("Can't find source path %s", old_source);
-          break;
-        default:
-          break;
-        }
-    }
-}
+extern void resolve_symlinks_in_ops (void);
 
 
 static void
 parse_args (int    *argcp,
             char ***argvp)
 {
-  SetupOp *op;
   int argc = *argcp;
   char **argv = *argvp;
   /* I can't imagine a case where someone wants more than this.
@@ -1563,8 +1522,7 @@ parse_args (int    *argcp,
         }
       else if (strcmp (arg, "--remount-ro") == 0)
         {
-          SetupOp *op = setup_op_new (SETUP_REMOUNT_RO_NO_RECURSIVE);
-          op->dest = argv[1];
+          setup_op_new (SETUP_REMOUNT_RO_NO_RECURSIVE, NULL, argv[1]);
 
           argv++;
           argc--;
@@ -1574,9 +1532,7 @@ parse_args (int    *argcp,
           if (argc < 3)
             die ("--bind takes two arguments");
 
-          op = setup_op_new (SETUP_BIND_MOUNT);
-          op->source = argv[1];
-          op->dest = argv[2];
+          setup_op_new (SETUP_BIND_MOUNT, argv[1], argv[2]);
 
           argv += 2;
           argc -= 2;
@@ -1586,9 +1542,7 @@ parse_args (int    *argcp,
           if (argc < 3)
             die ("--ro-bind takes two arguments");
 
-          op = setup_op_new (SETUP_RO_BIND_MOUNT);
-          op->source = argv[1];
-          op->dest = argv[2];
+          setup_op_new (SETUP_RO_BIND_MOUNT, argv[1], argv[2]);
 
           argv += 2;
           argc -= 2;
@@ -1598,9 +1552,7 @@ parse_args (int    *argcp,
           if (argc < 3)
             die ("--dev-bind takes two arguments");
 
-          op = setup_op_new (SETUP_DEV_BIND_MOUNT);
-          op->source = argv[1];
-          op->dest = argv[2];
+          setup_op_new (SETUP_DEV_BIND_MOUNT, argv[1], argv[2]);
 
           argv += 2;
           argc -= 2;
@@ -1610,8 +1562,7 @@ parse_args (int    *argcp,
           if (argc < 2)
             die ("--proc takes an argument");
 
-          op = setup_op_new (SETUP_MOUNT_PROC);
-          op->dest = argv[1];
+          setup_op_new (SETUP_MOUNT_PROC, NULL, argv[1]);
 
           argv += 1;
           argc -= 1;
@@ -1621,8 +1572,7 @@ parse_args (int    *argcp,
           if (argc < 2)
             die ("--dev takes an argument");
 
-          op = setup_op_new (SETUP_MOUNT_DEV);
-          op->dest = argv[1];
+          setup_op_new (SETUP_MOUNT_DEV, NULL, argv[1]);
 
           argv += 1;
           argc -= 1;
@@ -1632,8 +1582,7 @@ parse_args (int    *argcp,
           if (argc < 2)
             die ("--tmpfs takes an argument");
 
-          op = setup_op_new (SETUP_MOUNT_TMPFS);
-          op->dest = argv[1];
+          setup_op_new (SETUP_MOUNT_TMPFS, NULL, argv[1]);
 
           argv += 1;
           argc -= 1;
@@ -1643,8 +1592,7 @@ parse_args (int    *argcp,
           if (argc < 2)
             die ("--mqueue takes an argument");
 
-          op = setup_op_new (SETUP_MOUNT_MQUEUE);
-          op->dest = argv[1];
+          setup_op_new (SETUP_MOUNT_MQUEUE, NULL, argv[1]);
 
           argv += 1;
           argc -= 1;
