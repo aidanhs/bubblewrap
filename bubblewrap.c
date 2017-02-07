@@ -46,9 +46,6 @@ static int proc_fd = -1;
 char *opt_chdir_path = NULL;
 bool opt_needs_devpts = FALSE;
 bool opt_new_session = FALSE;
-int opt_sync_fd = -1;
-int opt_block_fd = -1;
-int opt_info_fd = -1;
 
 typedef enum {
   SETUP_BIND_MOUNT,
@@ -92,8 +89,6 @@ struct _LockFile
 
 static SetupOp *ops = NULL;
 static SetupOp *last_op = NULL;
-static LockFile *lock_files = NULL;
-static LockFile *last_lock_file = NULL;
 
 enum {
   PRIV_SEP_OP_BIND_MOUNT,
@@ -129,21 +124,6 @@ setup_op_new (SetupOpType type)
   return op;
 }
 
-static LockFile *
-lock_file_new (const char *path)
-{
-  LockFile *lock = xcalloc (sizeof (LockFile));
-
-  lock->path = path;
-  if (last_lock_file != NULL)
-    last_lock_file->next = lock;
-  else
-    lock_files = lock;
-
-  last_lock_file = lock;
-  return lock;
-}
-
 
 static void
 usage (int ecode, FILE *out)
@@ -157,8 +137,6 @@ usage (int ecode, FILE *out)
            "    --chdir DIR                  Change directory to DIR\n"
            "    --setenv VAR VALUE           Set an environment variable\n"
            "    --unsetenv VAR               Unset an environment variable\n"
-           "    --lock-file DEST             Take a lock on DEST while sandbox is running\n"
-           "    --sync-fd FD                 Keep this fd open while sandbox is running\n"
            "    --bind SRC DEST              Bind mount the host path SRC on DEST\n"
            "    --dev-bind SRC DEST          Bind mount the host path SRC on DEST, allowing device access\n"
            "    --ro-bind SRC DEST           Bind mount the host path SRC readonly on DEST\n"
@@ -172,8 +150,6 @@ usage (int ecode, FILE *out)
            "    --bind-data FD DEST          Copy from FD to file which is bind-mounted on DEST\n"
            "    --ro-bind-data FD DEST       Copy from FD to file which is readonly bind-mounted on DEST\n"
            "    --symlink SRC DEST           Create symlink at DEST with target SRC\n"
-           "    --block-fd FD                Block on FD until some data to read is available\n"
-           "    --info-fd FD                 Write information about the running container to FD\n"
            "    --new-session                Create a new terminal session\n"
           );
   exit (ecode);
@@ -323,68 +299,6 @@ monitor_child (int event_fd, pid_t child_pid)
             exit (propagate_exit_status (died_status));
         }
     }
-}
-
-/* This is pid 1 in the app sandbox. It is needed because we're using
- * pid namespaces, and someone has to reap zombies in it. We also detect
- * when the initial process (pid 2) dies and report its exit status to
- * the monitor so that it can return it to the original spawner.
- *
- * When there are no other processes in the sandbox the wait will return
- * ECHILD, and we then exit pid 1 to clean up the sandbox. */
-static int
-do_init (int event_fd, pid_t initial_pid)
-{
-  int initial_exit_status = 1;
-  LockFile *lock;
-
-  for (lock = lock_files; lock != NULL; lock = lock->next)
-    {
-      int fd = open (lock->path, O_RDONLY | O_CLOEXEC);
-      if (fd == -1)
-        die_with_error ("Unable to open lock file %s", lock->path);
-
-      struct flock l = {
-        .l_type = F_RDLCK,
-        .l_whence = SEEK_SET,
-        .l_start = 0,
-        .l_len = 0
-      };
-
-      if (fcntl (fd, F_SETLK, &l) < 0)
-        die_with_error ("Unable to lock file %s", lock->path);
-
-      /* Keep fd open to hang on to lock */
-    }
-
-  while (TRUE)
-    {
-      pid_t child;
-      int status;
-
-      child = wait (&status);
-      if (child == initial_pid && event_fd != -1)
-        {
-          uint64_t val;
-          int res UNUSED;
-
-          initial_exit_status = propagate_exit_status (status);
-
-          val = initial_exit_status + 1;
-          res = write (event_fd, &val, 8);
-          /* Ignore res, if e.g. the parent died and closed event_fd
-             we don't want to error out here */
-        }
-
-      if (child == -1 && errno != EINTR)
-        {
-          if (errno != ECHILD)
-            die_with_error ("init wait()");
-          break;
-        }
-    }
-
-  return initial_exit_status;
 }
 
 static char *
@@ -961,67 +875,6 @@ parse_args_recurse (int    *argcp,
           argv += 2;
           argc -= 2;
         }
-      else if (strcmp (arg, "--lock-file") == 0)
-        {
-          if (argc < 2)
-            die ("--lock-file takes an argument");
-
-          (void) lock_file_new (argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--sync-fd") == 0)
-        {
-          int the_fd;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--sync-fd takes an argument");
-
-          the_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          opt_sync_fd = the_fd;
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--block-fd") == 0)
-        {
-          int the_fd;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--block-fd takes an argument");
-
-          the_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          opt_block_fd = the_fd;
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--info-fd") == 0)
-        {
-          int the_fd;
-          char *endptr;
-
-          if (argc < 2)
-            die ("--info-fd takes an argument");
-
-          the_fd = strtol (argv[1], &endptr, 10);
-          if (argv[1][0] == 0 || endptr[0] != 0 || the_fd < 0)
-            die ("Invalid fd: %s", argv[1]);
-
-          opt_info_fd = the_fd;
-
-          argv += 1;
-          argc -= 1;
-        }
       else if (strcmp (arg, "--setenv") == 0)
         {
           if (argc < 3)
@@ -1165,35 +1018,9 @@ main (int    argc,
       /* Ignore res, if e.g. the child died and closed child_wait_fd we don't want to error out here */
       close (child_wait_fd);
 
-      if (opt_info_fd != -1)
-        {
-          cleanup_free char *output = xasprintf ("{\n    \"child-pid\": %i\n}\n", pid);
-          size_t len = strlen (output);
-          if (write (opt_info_fd, output, len) != len)
-            die_with_error ("Write to info_fd");
-          close (opt_info_fd);
-        }
-
       monitor_child (event_fd, pid);
       exit (0); /* Should not be reached, but better safe... */
     }
-
-  /* Child, in sandbox, privileged in the parent or in the user namespace (if --unshare-user).
-   *
-   * Note that for user namespaces we run as euid 0 during clone(), so
-   * the child user namespace is owned by euid 0., This means that the
-   * regular user namespace parent (with uid != 0) doesn't have any
-   * capabilities in it, which is nice as we can't exploit those. In
-   * particular the parent user namespace doesn't have CAP_PTRACE
-   * which would otherwise allow the parent to hijack of the child
-   * after this point.
-   *
-   * Unfortunately this also means you can't ptrace the final
-   * sandboxed process from outside the sandbox either.
-   */
-
-  if (opt_info_fd != -1)
-    close (opt_info_fd);
 
   /* Wait for the parent to init uid/gid maps and drop caps */
   res = read (child_wait_fd, &val, 8);
@@ -1255,13 +1082,6 @@ main (int    argc,
   if (chdir ("/") != 0)
     die_with_error ("chdir /");
 
-  if (opt_block_fd != -1)
-    {
-      char b[1];
-      read (opt_block_fd, b, 1);
-      close (opt_block_fd);
-    }
-
   umask (old_umask);
 
   new_cwd = "/";
@@ -1291,49 +1111,10 @@ main (int    argc,
       setsid () == (pid_t) -1)
     die_with_error ("setsid");
 
-  __debug__ (("forking for child\n"));
-
-  if (lock_files != NULL || opt_sync_fd != -1)
-    {
-      /* We have to have a pid 1 in the pid namespace, because
-       * otherwise we'll get a bunch of zombies as nothing reaps
-       * them. Alternatively if we're using sync_fd or lock_files we
-       * need some process to own these.
-       */
-
-      pid = fork ();
-      if (pid == -1)
-        die_with_error ("Can't fork for pid 1");
-
-      if (pid != 0)
-        {
-          /* Close fds in pid 1, except stdio and optionally event_fd
-             (for syncing pid 2 lifetime with monitor_child) and
-             opt_sync_fd (for syncing sandbox lifetime with outside
-             process).
-             Any other fds will been passed on to the child though. */
-          {
-            int dont_close[3];
-            int j = 0;
-            if (event_fd != -1)
-              dont_close[j++] = event_fd;
-            if (opt_sync_fd != -1)
-              dont_close[j++] = opt_sync_fd;
-            dont_close[j++] = -1;
-            fdwalk (proc_fd, close_extra_fds, dont_close);
-          }
-
-          return do_init (event_fd, pid);
-        }
-    }
-
   __debug__ (("launch executable %s\n", argv[0]));
 
   if (proc_fd != -1)
     close (proc_fd);
-
-  if (opt_sync_fd != -1)
-    close (opt_sync_fd);
 
   /* We want sigchild in the child */
   unblock_sigchild ();
