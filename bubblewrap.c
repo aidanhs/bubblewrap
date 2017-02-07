@@ -16,20 +16,11 @@
  *
  */
 
-/* config.h.  Generated from config.h.in by configure.  */
-/* config.h.in.  Generated from configure.ac by autoheader.  */
-
-/* Define if userns should be used by default in suid mode */
-/* #undef ENABLE_REQUIRE_USERNS */
-
 /* Define to 1 if you have the <inttypes.h> header file. */
 #define HAVE_INTTYPES_H 1
 
 /* Define to 1 if you have the <memory.h> header file. */
 #define HAVE_MEMORY_H 1
-
-/* Define if SELinux is available */
-/* #undef HAVE_SELINUX */
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #define HAVE_STDINT_H 1
@@ -55,85 +46,25 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #define HAVE_UNISTD_H 1
 
-/* Define to the address where bug reports for this package should be sent. */
-#define PACKAGE_BUGREPORT "atomic-devel@projectatomic.io"
-
-/* Define to the full name of this package. */
-#define PACKAGE_NAME "bubblewrap"
-
 /* Define to the full name and version of this package. */
 #define PACKAGE_STRING "bubblewrap 0.1.7"
-
-/* Define to the one symbol short name of this package. */
-#define PACKAGE_TARNAME "bubblewrap"
-
-/* Define to the home page for this package. */
-#define PACKAGE_URL ""
-
-/* Define to the version of this package. */
-#define PACKAGE_VERSION "0.1.7"
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
 
-/* Enable extensions on AIX 3, Interix.  */
-#ifndef _ALL_SOURCE
-# define _ALL_SOURCE 1
-#endif
 /* Enable GNU extensions on systems that have them.  */
 #ifndef _GNU_SOURCE
 # define _GNU_SOURCE 1
 #endif
-/* Enable threading extensions on Solaris.  */
-#ifndef _POSIX_PTHREAD_SEMANTICS
-# define _POSIX_PTHREAD_SEMANTICS 1
-#endif
-/* Enable extensions on HP NonStop.  */
-#ifndef _TANDEM_SOURCE
-# define _TANDEM_SOURCE 1
-#endif
-/* Enable general extensions on Solaris.  */
-#ifndef __EXTENSIONS__
-# define __EXTENSIONS__ 1
-#endif
-
-
-/* Enable large inode numbers on Mac OS X 10.5.  */
-#ifndef _DARWIN_USE_64_BIT_INODE
-# define _DARWIN_USE_64_BIT_INODE 1
-#endif
-
-/* Number of bits in a file offset, on hosts where this is settable. */
-/* #undef _FILE_OFFSET_BITS */
-
-/* Define for large files, on AIX-style hosts. */
-/* #undef _LARGE_FILES */
-
-/* Define to 1 if on MINIX. */
-/* #undef _MINIX */
-
-/* Define to 2 if the system does not provide POSIX.1 features except with
-   this defined. */
-/* #undef _POSIX_1_SOURCE */
-
-/* Define to 1 if you need to in order for `stat' and other things to work. */
-/* #undef _POSIX_SOURCE */
 
 
 #include <poll.h>
 #include <sched.h>
-#include <pwd.h>
-#include <grp.h>
 #include <sys/mount.h>
-#include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/eventfd.h>
-#include <sys/fsuid.h>
 #include <sys/signalfd.h>
-#include <sys/capability.h>
 #include <sys/prctl.h>
-#include <linux/sched.h>
-#include <linux/filter.h>
 
 #include <assert.h>
 #include <dirent.h>
@@ -144,8 +75,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 #if 0
 #define __debug__(x) printf x
@@ -161,71 +92,56 @@
 #define FALSE 0
 typedef int bool;
 
-#define PIPE_READ_END 0
-#define PIPE_WRITE_END 1
-
-void  die_with_error (const char *format,
+static void  die_with_error (const char *format,
                       ...) __attribute__((__noreturn__)) __attribute__((format (printf, 1, 2)));
-void  die (const char *format,
+static void  die (const char *format,
            ...) __attribute__((__noreturn__)) __attribute__((format (printf, 1, 2)));
-void  die_oom (void) __attribute__((__noreturn__));
+static void  die_oom (void) __attribute__((__noreturn__));
 
-void *xmalloc (size_t size);
-void *xcalloc (size_t size);
-void *xrealloc (void  *ptr,
+static void *xmalloc (size_t size);
+static void *xcalloc (size_t size);
+static void *xrealloc (void  *ptr,
                 size_t size);
-char *xstrdup (const char *str);
-void  strfreev (char **str_array);
-void  xsetenv (const char *name,
+static char *xstrdup (const char *str);
+static void  xsetenv (const char *name,
                const char *value,
                int         overwrite);
-void  xunsetenv (const char *name);
-char *strconcat (const char *s1,
+static char *strconcat (const char *s1,
                  const char *s2);
-char *strconcat3 (const char *s1,
+static char *strconcat3 (const char *s1,
                   const char *s2,
                   const char *s3);
-char * xasprintf (const char *format,
+static char * xasprintf (const char *format,
                   ...) __attribute__((format (printf, 1, 2)));
-bool  has_prefix (const char *str,
-                  const char *prefix);
-bool  has_path_prefix (const char *str,
+static bool  has_path_prefix (const char *str,
                        const char *prefix);
-bool  path_equal (const char *path1,
+static bool  path_equal (const char *path1,
                   const char *path2);
-int   fdwalk (int                     proc_fd,
+static int   fdwalk (int                     proc_fd,
               int                     (*cb)(void *data,
                                   int fd),
               void                   *data);
-char *load_file_data (int     fd,
+static char *load_file_data (int     fd,
                       size_t *size);
-char *load_file_at (int         dirfd,
+static char *load_file_at (int         dirfd,
                     const char *path);
-int   write_file_at (int         dirfd,
-                     const char *path,
-                     const char *content);
-int   write_to_fd (int         fd,
+static int   write_to_fd (int         fd,
                    const char *content,
                    ssize_t     len);
-int   copy_file_data (int sfd,
-                      int dfd);
-int   copy_file (const char *src_path,
-                 const char *dst_path,
-                 mode_t      mode);
-int   create_file (const char *path,
+static int   create_file (const char *path,
                    mode_t      mode,
                    const char *content);
-int   ensure_file (const char *path,
+static int   ensure_file (const char *path,
                    mode_t      mode);
-int   get_file_mode (const char *pathname);
-int   mkdir_with_parents (const char *pathname,
+static int   get_file_mode (const char *pathname);
+static int   mkdir_with_parents (const char *pathname,
                           int         mode,
                           bool        create_last);
 
 /* syscall wrappers */
-int   raw_clone (unsigned long flags,
+static int   raw_clone (unsigned long flags,
                  void         *child_stack);
-int   pivot_root (const char *new_root,
+static int   pivot_root (const char *new_root,
                   const char *put_old);
 
 static inline void
@@ -237,29 +153,7 @@ cleanup_freep (void *p)
     free (*pp);
 }
 
-static inline void
-cleanup_strvp (void *p)
-{
-  void **pp = (void **) p;
-
-  strfreev (*pp);
-}
-
-static inline void
-cleanup_fdp (int *fdp)
-{
-  int fd;
-
-  assert (fdp);
-
-  fd = *fdp;
-  if (fd != -1)
-    (void) close (fd);
-}
-
 #define cleanup_free __attribute__((cleanup (cleanup_freep)))
-#define cleanup_fd __attribute__((cleanup (cleanup_fdp)))
-#define cleanup_strv __attribute__((cleanup (cleanup_strvp)))
 
 static inline void *
 steal_pointer (void *pp)
@@ -277,9 +171,7 @@ steal_pointer (void *pp)
 #define steal_pointer(pp) \
   (0 ? (*(pp)) : (steal_pointer) (pp))
 
-#include <sys/syscall.h>
-
-void
+static void
 die_with_error (const char *format, ...)
 {
   va_list args;
@@ -296,7 +188,7 @@ die_with_error (const char *format, ...)
   exit (1);
 }
 
-void
+static void
 die (const char *format, ...)
 {
   va_list args;
@@ -310,14 +202,14 @@ die (const char *format, ...)
   exit (1);
 }
 
-void
+static void
 die_oom (void)
 {
   puts ("Out of memory");
   exit (1);
 }
 
-void *
+static void *
 xmalloc (size_t size)
 {
   void *res = malloc (size);
@@ -327,7 +219,7 @@ xmalloc (size_t size)
   return res;
 }
 
-void *
+static void *
 xcalloc (size_t size)
 {
   void *res = calloc (1, size);
@@ -337,7 +229,7 @@ xcalloc (size_t size)
   return res;
 }
 
-void *
+static void *
 xrealloc (void *ptr, size_t size)
 {
   void *res = realloc (ptr, size);
@@ -347,7 +239,7 @@ xrealloc (void *ptr, size_t size)
   return res;
 }
 
-char *
+static char *
 xstrdup (const char *str)
 {
   char *res;
@@ -361,27 +253,13 @@ xstrdup (const char *str)
   return res;
 }
 
-void
-strfreev (char **str_array)
-{
-  if (str_array)
-    {
-      int i;
-
-      for (i = 0; str_array[i] != NULL; i++)
-        free (str_array[i]);
-
-      free (str_array);
-    }
-}
-
 /* Compares if str has a specific path prefix. This differs
    from a regular prefix in two ways. First of all there may
    be multiple slashes separating the path elements, and
    secondly, if a prefix is matched that has to be en entire
    path element. For instance /a/prefix matches /a/prefix/foo/bar,
    but not /a/prefixfoo/bar. */
-bool
+static bool
 has_path_prefix (const char *str,
                  const char *prefix)
 {
@@ -414,7 +292,7 @@ has_path_prefix (const char *str,
     }
 }
 
-bool
+static bool
 path_equal (const char *path1,
             const char *path2)
 {
@@ -447,28 +325,14 @@ path_equal (const char *path1,
 }
 
 
-bool
-has_prefix (const char *str,
-            const char *prefix)
-{
-  return strncmp (str, prefix, strlen (prefix)) == 0;
-}
-
-void
+static void
 xsetenv (const char *name, const char *value, int overwrite)
 {
   if (setenv (name, value, overwrite))
     die ("setenv failed");
 }
 
-void
-xunsetenv (const char *name)
-{
-  if (unsetenv (name))
-    die ("unsetenv failed");
-}
-
-char *
+static char *
 strconcat (const char *s1,
            const char *s2)
 {
@@ -490,7 +354,7 @@ strconcat (const char *s1,
   return res;
 }
 
-char *
+static char *
 strconcat3 (const char *s1,
             const char *s2,
             const char *s3)
@@ -517,7 +381,7 @@ strconcat3 (const char *s1,
   return res;
 }
 
-char *
+static char *
 xasprintf (const char *format,
            ...)
 {
@@ -532,7 +396,7 @@ xasprintf (const char *format,
   return buffer;
 }
 
-int
+static int
 fdwalk (int proc_fd, int (*cb)(void *data,
                                int   fd), void *data)
 {
@@ -589,7 +453,7 @@ fdwalk (int proc_fd, int (*cb)(void *data,
 }
 
 /* Sets errno on error (!= 0), ENOSPC on short write */
-int
+static int
 write_to_fd (int         fd,
              const char *content,
              ssize_t     len)
@@ -615,32 +479,7 @@ write_to_fd (int         fd,
 }
 
 /* Sets errno on error (!= 0), ENOSPC on short write */
-int
-write_file_at (int         dirfd,
-               const char *path,
-               const char *content)
-{
-  int fd;
-  bool res;
-  int errsv;
-
-  fd = openat (dirfd, path, O_RDWR | O_CLOEXEC, 0);
-  if (fd == -1)
-    return -1;
-
-  res = 0;
-  if (content)
-    res = write_to_fd (fd, content, strlen (content));
-
-  errsv = errno;
-  close (fd);
-  errno = errsv;
-
-  return res;
-}
-
-/* Sets errno on error (!= 0), ENOSPC on short write */
-int
+static int
 create_file (const char *path,
              mode_t      mode,
              const char *content)
@@ -664,7 +503,7 @@ create_file (const char *path,
   return res;
 }
 
-int
+static int
 ensure_file (const char *path,
              mode_t      mode)
 {
@@ -684,73 +523,9 @@ ensure_file (const char *path,
 }
 
 
-#define BUFSIZE 8192
-/* Sets errno on error (!= 0), ENOSPC on short write */
-int
-copy_file_data (int sfd,
-                int dfd)
-{
-  char buffer[BUFSIZE];
-  ssize_t bytes_read;
-
-  while (TRUE)
-    {
-      bytes_read = read (sfd, buffer, BUFSIZE);
-      if (bytes_read == -1)
-        {
-          if (errno == EINTR)
-            continue;
-
-          return -1;
-        }
-
-      if (bytes_read == 0)
-        break;
-
-      if (write_to_fd (dfd, buffer, bytes_read) != 0)
-        return -1;
-    }
-
-  return 0;
-}
-
-/* Sets errno on error (!= 0), ENOSPC on short write */
-int
-copy_file (const char *src_path,
-           const char *dst_path,
-           mode_t      mode)
-{
-  int sfd;
-  int dfd;
-  int res;
-  int errsv;
-
-  sfd = open (src_path, O_CLOEXEC | O_RDONLY);
-  if (sfd == -1)
-    return -1;
-
-  dfd = creat (dst_path, mode);
-  if (dfd == -1)
-    {
-      errsv = errno;
-      close (sfd);
-      errno = errsv;
-      return -1;
-    }
-
-  res = copy_file_data (sfd, dfd);
-
-  errsv = errno;
-  close (sfd);
-  close (dfd);
-  errno = errsv;
-
-  return res;
-}
-
 /* Sets errno on error (== NULL),
  * Always ensures terminating zero */
-char *
+static char *
 load_file_data (int     fd,
                 size_t *size)
 {
@@ -798,7 +573,7 @@ load_file_data (int     fd,
 
 /* Sets errno on error (== NULL),
  * Always ensures terminating zero */
-char *
+static char *
 load_file_at (int         dirfd,
               const char *path)
 {
@@ -820,7 +595,7 @@ load_file_at (int         dirfd,
 }
 
 /* Sets errno on error (< 0) */
-int
+static int
 get_file_mode (const char *pathname)
 {
   struct stat buf;
@@ -832,7 +607,7 @@ get_file_mode (const char *pathname)
 }
 
 /* Sets errno on error (!= 0) */
-int
+static int
 mkdir_with_parents (const char *pathname,
                     int         mode,
                     bool        create_last)
@@ -889,28 +664,17 @@ mkdir_with_parents (const char *pathname,
   return 0;
 }
 
-int
+static int
 raw_clone (unsigned long flags,
            void         *child_stack)
 {
-#if defined(__s390__) || defined(__CRIS__)
-  /* On s390 and cris the order of the first and second arguments
-   * of the raw clone() system call is reversed. */
-  return (int) syscall (__NR_clone, child_stack, flags);
-#else
   return (int) syscall (__NR_clone, flags, child_stack);
-#endif
 }
 
-int
+static int
 pivot_root (const char * new_root, const char * put_old)
 {
-#ifdef __NR_pivot_root
   return syscall (__NR_pivot_root, new_root, put_old);
-#else
-  errno = ENOSYS;
-  return -1;
-#endif
 }
 
 
@@ -923,7 +687,7 @@ typedef enum {
   BIND_RECURSIVE = (1 << 3),
 } bind_option_t;
 
-int bind_mount (int           proc_fd,
+static int bind_mount (int           proc_fd,
                 const char   *src,
                 const char   *dest,
                 bind_option_t options);
@@ -1278,7 +1042,7 @@ parse_mountinfo (int  proc_fd,
   return steal_pointer (&mount_tab);
 }
 
-int
+static int
 bind_mount (int           proc_fd,
             const char   *src,
             const char   *dest,
@@ -1353,8 +1117,7 @@ static const char *argv0;
 static const char *host_tty_dev;
 static int proc_fd = -1;
 
-char *opt_chdir_path = NULL;
-bool opt_needs_devpts = FALSE;
+static char *opt_chdir_path = NULL;
 
 typedef enum {
   SETUP_BIND_MOUNT,
@@ -1378,24 +1141,8 @@ struct _SetupOp
   SetupOp    *next;
 };
 
-typedef struct _LockFile LockFile;
-
-struct _LockFile
-{
-  const char *path;
-  LockFile   *next;
-};
-
 static SetupOp *ops = NULL;
 static SetupOp *last_op = NULL;
-
-typedef struct
-{
-  uint32_t op;
-  uint32_t flags;
-  uint32_t arg1_offset;
-  uint32_t arg2_offset;
-} PrivSepOp;
 
 static SetupOp *
 setup_op_new (SetupOpType type)
@@ -1878,7 +1625,6 @@ parse_args (int    *argcp,
 
           op = setup_op_new (SETUP_MOUNT_DEV);
           op->dest = argv[1];
-          opt_needs_devpts = TRUE;
 
           argv += 1;
           argc -= 1;
