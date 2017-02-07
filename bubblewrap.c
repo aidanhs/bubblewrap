@@ -79,15 +79,6 @@ struct _LockFile
 static SetupOp *ops = NULL;
 static SetupOp *last_op = NULL;
 
-enum {
-  PRIV_SEP_OP_BIND_MOUNT,
-  PRIV_SEP_OP_PROC_MOUNT,
-  PRIV_SEP_OP_TMPFS_MOUNT,
-  PRIV_SEP_OP_DEVPTS_MOUNT,
-  PRIV_SEP_OP_MQUEUE_MOUNT,
-  PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE,
-};
-
 typedef struct
 {
   uint32_t op;
@@ -297,58 +288,6 @@ get_oldroot_path (const char *path)
 }
 
 static void
-privileged_op (uint32_t    op,
-               uint32_t    flags,
-               const char *arg1,
-               const char *arg2)
-{
-  switch (op)
-    {
-    case PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE:
-      if (bind_mount (proc_fd, NULL, arg2, BIND_READONLY) != 0)
-        die_with_error ("Can't remount readonly on %s", arg2);
-      break;
-
-    case PRIV_SEP_OP_BIND_MOUNT:
-      /* We always bind directories recursively, otherwise this would let us
-         access files that are otherwise covered on the host */
-      if (bind_mount (proc_fd, arg1, arg2, BIND_RECURSIVE | flags) != 0)
-        die_with_error ("Can't bind mount %s on %s", arg1, arg2);
-      break;
-
-    case PRIV_SEP_OP_PROC_MOUNT:
-      if (mount ("proc", arg1, "proc", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0)
-        die_with_error ("Can't mount proc on %s", arg1);
-      break;
-
-    case PRIV_SEP_OP_TMPFS_MOUNT:
-      {
-        if (mount ("tmpfs", arg1, "tmpfs", MS_MGC_VAL | MS_NOSUID | MS_NODEV, "mode=0755") != 0)
-          die_with_error ("Can't mount tmpfs on %s", arg1);
-        break;
-      }
-
-    case PRIV_SEP_OP_DEVPTS_MOUNT:
-      if (mount ("devpts", arg1, "devpts", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC,
-                 "newinstance,ptmxmode=0666,mode=620") != 0)
-        die_with_error ("Can't mount devpts on %s", arg1);
-      break;
-
-    case PRIV_SEP_OP_MQUEUE_MOUNT:
-      if (mount ("mqueue", arg1, "mqueue", 0, NULL) != 0)
-        die_with_error ("Can't mount mqueue on %s", arg1);
-      break;
-
-    default:
-      die ("Unexpected privileged op %d", op);
-    }
-}
-
-/* This is run unprivileged in the child namespace but can request
- * some privileged operations (also in the child namespace) via the
- * privileged_op_socket.
- */
-static void
 setup_newroot (void)
 {
   SetupOp *op;
@@ -388,30 +327,31 @@ setup_newroot (void)
           else if (ensure_file (dest, 0666) != 0)
             die_with_error ("Can't create file at %s", op->dest);
 
-          privileged_op (PRIV_SEP_OP_BIND_MOUNT,
-                         (op->type == SETUP_RO_BIND_MOUNT ? BIND_READONLY : 0) |
-                         (op->type == SETUP_DEV_BIND_MOUNT ? BIND_DEVICES : 0),
-                         source, dest);
+          uint32_t flags = (op->type == SETUP_RO_BIND_MOUNT ? BIND_READONLY : 0) |
+                           (op->type == SETUP_DEV_BIND_MOUNT ? BIND_DEVICES : 0);
+          if (bind_mount (proc_fd, source, dest, BIND_RECURSIVE | flags) != 0)
+            die_with_error ("Can't bind mount %s on %s", source, dest);
           break;
 
         case SETUP_REMOUNT_RO_NO_RECURSIVE:
-          privileged_op (PRIV_SEP_OP_REMOUNT_RO_NO_RECURSIVE, BIND_READONLY, NULL, dest);
+          if (bind_mount (proc_fd, NULL, dest, BIND_READONLY) != 0)
+            die_with_error ("Can't remount readonly on %s", dest);
           break;
 
         case SETUP_MOUNT_PROC:
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (PRIV_SEP_OP_PROC_MOUNT, 0,
-                         dest, NULL);
+          if (mount ("proc", dest, "proc", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0)
+            die_with_error ("Can't mount proc on %s", dest);
           break;
 
         case SETUP_MOUNT_DEV:
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (PRIV_SEP_OP_TMPFS_MOUNT, 0,
-                         dest, NULL);
+          if (mount ("tmpfs", dest, "tmpfs", MS_MGC_VAL | MS_NOSUID | MS_NODEV, "mode=0755") != 0)
+            die_with_error ("Can't mount tmpfs on %s", dest);
 
           static const char *const devnodes[] = { "null", "zero", "full", "random", "urandom", "tty" };
           for (i = 0; i < N_ELEMENTS (devnodes); i++)
@@ -420,8 +360,8 @@ setup_newroot (void)
               cleanup_free char *node_src = strconcat ("/oldroot/dev/", devnodes[i]);
               if (create_file (node_dest, 0666, NULL) != 0)
                 die_with_error ("Can't create file %s/%s", op->dest, devnodes[i]);
-              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
-                             node_src, node_dest);
+              if (bind_mount (proc_fd, node_src, node_dest, BIND_RECURSIVE | BIND_DEVICES) != 0)
+                die_with_error ("Can't bind mount %s on %s", node_src, node_dest);
             }
 
           static const char *const stdionodes[] = { "stdin", "stdout", "stderr" };
@@ -443,8 +383,9 @@ setup_newroot (void)
 
             if (mkdir (pts, 0755) == -1)
               die_with_error ("Can't create %s/devpts", op->dest);
-            privileged_op (PRIV_SEP_OP_DEVPTS_MOUNT, BIND_DEVICES,
-                           pts, NULL);
+            if (mount ("devpts", pts, "devpts", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC | 0,
+                       "newinstance,ptmxmode=0666,mode=620") != 0)
+              die_with_error ("Can't mount devpts on %s", pts);
 
             if (symlink ("pts/ptmx", ptmx) != 0)
               die_with_error ("Can't make symlink at %s/ptmx", op->dest);
@@ -463,8 +404,8 @@ setup_newroot (void)
               if (create_file (dest_console, 0666, NULL) != 0)
                 die_with_error ("creating %s/console", op->dest);
 
-              privileged_op (PRIV_SEP_OP_BIND_MOUNT, BIND_DEVICES,
-                             src_tty_dev, dest_console);
+              if (bind_mount (proc_fd, src_tty_dev, dest_console, BIND_RECURSIVE | BIND_DEVICES) != 0)
+                die_with_error ("Can't bind mount %s on %s", src_tty_dev, dest_console);
             }
 
           break;
@@ -473,16 +414,16 @@ setup_newroot (void)
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (PRIV_SEP_OP_TMPFS_MOUNT, 0,
-                         dest, NULL);
+          if (mount ("tmpfs", dest, "tmpfs", MS_MGC_VAL | MS_NOSUID | MS_NODEV, "mode=0755") != 0)
+            die_with_error ("Can't mount tmpfs on %s", dest);
           break;
 
         case SETUP_MOUNT_MQUEUE:
           if (mkdir (dest, 0755) != 0 && errno != EEXIST)
             die_with_error ("Can't mkdir %s", op->dest);
 
-          privileged_op (PRIV_SEP_OP_MQUEUE_MOUNT, 0,
-                         dest, NULL);
+          if (mount ("mqueue", dest, "mqueue", 0, NULL) != 0)
+            die_with_error ("Can't mount mqueue on %s", dest);
           break;
 
         default:
