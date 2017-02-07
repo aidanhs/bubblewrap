@@ -1137,7 +1137,6 @@ struct _SetupOp
   SetupOpType type;
   const char *source;
   const char *dest;
-  int         fd;
   SetupOp    *next;
 };
 
@@ -1150,7 +1149,6 @@ setup_op_new (SetupOpType type)
   SetupOp *op = xcalloc (sizeof (SetupOp));
 
   op->type = type;
-  op->fd = -1;
   if (last_op != NULL)
     last_op->next = op;
   else
