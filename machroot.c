@@ -46,9 +46,6 @@
 /* Define to 1 if you have the <unistd.h> header file. */
 #define HAVE_UNISTD_H 1
 
-/* Define to the full name and version of this package. */
-#define PACKAGE_STRING "machroot 0.1.0"
-
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
 
@@ -1117,7 +1114,7 @@ static const char *argv0;
 static const char *host_tty_dev;
 static int proc_fd = -1;
 
-static char *opt_chdir_path = NULL;
+extern char *opt_chdir_path;
 
 typedef enum {
   SETUP_BIND_MOUNT = 0,
@@ -1145,26 +1142,7 @@ extern uint64_t opsveclen;
 
 extern SetupOp *setup_op_new (SetupOpType type, const char *source, const char *dest);
 
-static void
-usage (int ecode, FILE *out)
-{
-  fprintf (out, "usage: %s [OPTIONS...] COMMAND [ARGS...]\n\n", argv0);
-
-  fprintf (out,
-           "    --help                       Print this help\n"
-           "    --version                    Print version\n"
-           "    --chdir DIR                  Change directory to DIR\n"
-           "    --bind SRC DEST              Bind mount the host path SRC on DEST\n"
-           "    --dev-bind SRC DEST          Bind mount the host path SRC on DEST, allowing device access\n"
-           "    --ro-bind SRC DEST           Bind mount the host path SRC readonly on DEST\n"
-           "    --remount-ro DEST            Remount DEST as readonly, it doesn't recursively remount\n"
-           "    --proc DEST                  Mount procfs on DEST\n"
-           "    --dev DEST                   Mount new dev on DEST\n"
-           "    --tmpfs DEST                 Mount new tmpfs on DEST\n"
-           "    --mqueue DEST                Mount new mqueue on DEST\n"
-          );
-  exit (ecode);
-}
+extern void usage (int ecode, int out);
 
 static void
 block_sigchild (void)
@@ -1477,142 +1455,7 @@ setup_newroot (void)
 extern void resolve_symlinks_in_ops (void);
 
 
-static void
-parse_args (int    *argcp,
-            char ***argvp)
-{
-  int argc = *argcp;
-  char **argv = *argvp;
-  /* I can't imagine a case where someone wants more than this.
-   * If you do...you should be able to pass multiple files
-   * via a single tmpfs and linking them there, etc.
-   *
-   * We're adding this hardening due to precedent from
-   * http://googleprojectzero.blogspot.com/2014/08/the-poisoned-nul-byte-2014-edition.html
-   *
-   * I picked 9000 because the Internet told me to and it was hard to
-   * resist.
-   */
-  static const uint32_t MAX_ARGS = 9000;
-
-  if (argc > MAX_ARGS)
-    die ("Exceeded maximum number of arguments %u", MAX_ARGS);
-
-  while (argc > 0)
-    {
-      const char *arg = argv[0];
-
-      if (strcmp (arg, "--help") == 0)
-        {
-          usage (EXIT_SUCCESS, stdout);
-        }
-      else if (strcmp (arg, "--version") == 0)
-        {
-          printf ("%s\n", PACKAGE_STRING);
-          exit (0);
-        }
-      else if (strcmp (arg, "--chdir") == 0)
-        {
-          if (argc < 2)
-            die ("--chdir takes one argument");
-
-          opt_chdir_path = argv[1];
-          argv++;
-          argc--;
-        }
-      else if (strcmp (arg, "--remount-ro") == 0)
-        {
-          setup_op_new (SETUP_REMOUNT_RO_NO_RECURSIVE, NULL, argv[1]);
-
-          argv++;
-          argc--;
-        }
-      else if (strcmp (arg, "--bind") == 0)
-        {
-          if (argc < 3)
-            die ("--bind takes two arguments");
-
-          setup_op_new (SETUP_BIND_MOUNT, argv[1], argv[2]);
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--ro-bind") == 0)
-        {
-          if (argc < 3)
-            die ("--ro-bind takes two arguments");
-
-          setup_op_new (SETUP_RO_BIND_MOUNT, argv[1], argv[2]);
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--dev-bind") == 0)
-        {
-          if (argc < 3)
-            die ("--dev-bind takes two arguments");
-
-          setup_op_new (SETUP_DEV_BIND_MOUNT, argv[1], argv[2]);
-
-          argv += 2;
-          argc -= 2;
-        }
-      else if (strcmp (arg, "--proc") == 0)
-        {
-          if (argc < 2)
-            die ("--proc takes an argument");
-
-          setup_op_new (SETUP_MOUNT_PROC, NULL, argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--dev") == 0)
-        {
-          if (argc < 2)
-            die ("--dev takes an argument");
-
-          setup_op_new (SETUP_MOUNT_DEV, NULL, argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--tmpfs") == 0)
-        {
-          if (argc < 2)
-            die ("--tmpfs takes an argument");
-
-          setup_op_new (SETUP_MOUNT_TMPFS, NULL, argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (strcmp (arg, "--mqueue") == 0)
-        {
-          if (argc < 2)
-            die ("--mqueue takes an argument");
-
-          setup_op_new (SETUP_MOUNT_MQUEUE, NULL, argv[1]);
-
-          argv += 1;
-          argc -= 1;
-        }
-      else if (*arg == '-')
-        {
-          die ("Unknown option %s", arg);
-        }
-      else
-        {
-          break;
-        }
-
-      argv++;
-      argc--;
-    }
-
-  *argcp = argc;
-  *argvp = argv;
-}
+extern void parse_args (int *argcp, char ***argvp);
 
 int machroot (int argc, char **argv);
 
@@ -1650,7 +1493,7 @@ machroot (int    argc,
   argc--;
 
   if (argc == 0)
-    usage (EXIT_FAILURE, stderr);
+    usage (EXIT_FAILURE, STDERR_FILENO);
 
   parse_args (&argc, &argv);
 
@@ -1659,7 +1502,7 @@ machroot (int    argc,
   }
 
   if (argc == 0)
-    usage (EXIT_FAILURE, stderr);
+    usage (EXIT_FAILURE, STDERR_FILENO);
 
   __debug__ (("Creating root mount point\n"));
 
