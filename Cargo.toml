@@ -7,3 +7,4 @@ build = "build.rs"
 [dependencies]
 lazy_static = "0.1"
 libc = "0.2.20"
+nix = "0.7.0"

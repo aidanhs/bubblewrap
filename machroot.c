@@ -103,11 +103,6 @@ static char *xstrdup (const char *str);
 static void  xsetenv (const char *name,
                const char *value,
                int         overwrite);
-static char *strconcat (const char *s1,
-                 const char *s2);
-static char *strconcat3 (const char *s1,
-                  const char *s2,
-                  const char *s3);
 static char * xasprintf (const char *format,
                   ...) __attribute__((format (printf, 1, 2)));
 static bool  has_path_prefix (const char *str,
@@ -122,18 +117,6 @@ static char *load_file_data (int     fd,
                       size_t *size);
 static char *load_file_at (int         dirfd,
                     const char *path);
-static int   write_to_fd (int         fd,
-                   const char *content,
-                   ssize_t     len);
-static int   create_file (const char *path,
-                   mode_t      mode,
-                   const char *content);
-static int   ensure_file (const char *path,
-                   mode_t      mode);
-static int   get_file_mode (const char *pathname);
-static int   mkdir_with_parents (const char *pathname,
-                          int         mode,
-                          bool        create_last);
 
 /* syscall wrappers */
 static int   raw_clone (unsigned long flags,
@@ -330,55 +313,6 @@ xsetenv (const char *name, const char *value, int overwrite)
 }
 
 static char *
-strconcat (const char *s1,
-           const char *s2)
-{
-  size_t len = 0;
-  char *res;
-
-  if (s1)
-    len += strlen (s1);
-  if (s2)
-    len += strlen (s2);
-
-  res = xmalloc (len + 1);
-  *res = 0;
-  if (s1)
-    strcat (res, s1);
-  if (s2)
-    strcat (res, s2);
-
-  return res;
-}
-
-static char *
-strconcat3 (const char *s1,
-            const char *s2,
-            const char *s3)
-{
-  size_t len = 0;
-  char *res;
-
-  if (s1)
-    len += strlen (s1);
-  if (s2)
-    len += strlen (s2);
-  if (s3)
-    len += strlen (s3);
-
-  res = xmalloc (len + 1);
-  *res = 0;
-  if (s1)
-    strcat (res, s1);
-  if (s2)
-    strcat (res, s2);
-  if (s3)
-    strcat (res, s3);
-
-  return res;
-}
-
-static char *
 xasprintf (const char *format,
            ...)
 {
@@ -448,77 +382,6 @@ fdwalk (int proc_fd, int (*cb)(void *data,
 
   return res;
 }
-
-/* Sets errno on error (!= 0), ENOSPC on short write */
-static int
-write_to_fd (int         fd,
-             const char *content,
-             ssize_t     len)
-{
-  ssize_t res;
-
-  while (len > 0)
-    {
-      res = write (fd, content, len);
-      if (res < 0 && errno == EINTR)
-        continue;
-      if (res <= 0)
-        {
-          if (res == 0) /* Unexpected short write, should not happen when writing to a file */
-            errno = ENOSPC;
-          return -1;
-        }
-      len -= res;
-      content += res;
-    }
-
-  return 0;
-}
-
-/* Sets errno on error (!= 0), ENOSPC on short write */
-static int
-create_file (const char *path,
-             mode_t      mode,
-             const char *content)
-{
-  int fd;
-  int res;
-  int errsv;
-
-  fd = creat (path, mode);
-  if (fd == -1)
-    return -1;
-
-  res = 0;
-  if (content)
-    res = write_to_fd (fd, content, strlen (content));
-
-  errsv = errno;
-  close (fd);
-  errno = errsv;
-
-  return res;
-}
-
-static int
-ensure_file (const char *path,
-             mode_t      mode)
-{
-  struct stat buf;
-
-  /* We check this ahead of time, otherwise
-     the create file will fail in the read-only
-     case with EROFD instead of EEXIST */
-  if (stat (path, &buf) ==  0 &&
-      S_ISREG (buf.st_mode))
-    return 0;
-
-  if (create_file (path, mode, NULL) != 0 &&  errno != EEXIST)
-    return -1;
-
-  return 0;
-}
-
 
 /* Sets errno on error (== NULL),
  * Always ensures terminating zero */
@@ -591,76 +454,6 @@ load_file_at (int         dirfd,
   return data;
 }
 
-/* Sets errno on error (< 0) */
-static int
-get_file_mode (const char *pathname)
-{
-  struct stat buf;
-
-  if (stat (pathname, &buf) !=  0)
-    return -1;
-
-  return buf.st_mode & S_IFMT;
-}
-
-/* Sets errno on error (!= 0) */
-static int
-mkdir_with_parents (const char *pathname,
-                    int         mode,
-                    bool        create_last)
-{
-  cleanup_free char *fn = NULL;
-  char *p;
-  struct stat buf;
-
-  if (pathname == NULL || *pathname == '\0')
-    {
-      errno = EINVAL;
-      return -1;
-    }
-
-  fn = xstrdup (pathname);
-
-  p = fn;
-  while (*p == '/')
-    p++;
-
-  do
-    {
-      while (*p && *p != '/')
-        p++;
-
-      if (!*p)
-        p = NULL;
-      else
-        *p = '\0';
-
-      if (!create_last && p == NULL)
-        break;
-
-      if (stat (fn, &buf) !=  0)
-        {
-          if (mkdir (fn, mode) == -1 && errno != EEXIST)
-            return -1;
-        }
-      else if (!S_ISDIR (buf.st_mode))
-        {
-          errno = ENOTDIR;
-          return -1;
-        }
-
-      if (p)
-        {
-          *p++ = '/';
-          while (*p && *p == '/')
-            p++;
-        }
-    }
-  while (p);
-
-  return 0;
-}
-
 static int
 raw_clone (unsigned long flags,
            void         *child_stack)
@@ -683,8 +476,9 @@ typedef enum {
   BIND_DEVICES = (1 << 2),
   BIND_RECURSIVE = (1 << 3),
 } bind_option_t;
+static_assert(sizeof(bind_option_t) == 4, "invalid bindop size");
 
-static int bind_mount (int           proc_fd,
+int bind_mount (int           proc_fd,
                 const char   *src,
                 const char   *dest,
                 bind_option_t options);
@@ -1039,7 +833,7 @@ parse_mountinfo (int  proc_fd,
   return steal_pointer (&mount_tab);
 }
 
-static int
+int
 bind_mount (int           proc_fd,
             const char   *src,
             const char   *dest,
@@ -1111,36 +905,10 @@ bind_mount (int           proc_fd,
 static uid_t real_uid;
 static gid_t real_gid;
 static const char *argv0;
-static const char *host_tty_dev;
-static int proc_fd = -1;
+extern const char *host_tty_dev;
+extern int proc_fd;
 
 extern char *opt_chdir_path;
-
-typedef enum {
-  SETUP_BIND_MOUNT = 0,
-  SETUP_RO_BIND_MOUNT,
-  SETUP_DEV_BIND_MOUNT,
-  SETUP_MOUNT_PROC,
-  SETUP_MOUNT_DEV,
-  SETUP_MOUNT_TMPFS,
-  SETUP_MOUNT_MQUEUE,
-  SETUP_REMOUNT_RO_NO_RECURSIVE,
-} SetupOpType;
-static_assert(sizeof(SetupOpType) == 4, "invalid setupop size");
-
-typedef struct _SetupOp SetupOp;
-
-struct _SetupOp
-{
-  SetupOpType type;
-  const char *source;
-  const char *dest;
-};
-
-extern SetupOp const *opsvec;
-extern uint64_t opsveclen;
-
-extern SetupOp *setup_op_new (SetupOpType type, const char *source, const char *dest);
 
 extern void usage (int ecode, int out);
 
@@ -1290,167 +1058,7 @@ monitor_child (int event_fd, pid_t child_pid)
     }
 }
 
-static char *
-get_newroot_path (const char *path)
-{
-  while (*path == '/')
-    path++;
-  return strconcat ("/newroot/", path);
-}
-
-static char *
-get_oldroot_path (const char *path)
-{
-  while (*path == '/')
-    path++;
-  return strconcat ("/oldroot/", path);
-}
-
-static void
-setup_newroot (void)
-{
-  int i;
-
-  for (i = 0; i < opsveclen; i++)
-    {
-      const SetupOp *op = &opsvec[i];
-      cleanup_free char *source = NULL;
-      cleanup_free char *dest = NULL;
-      int source_mode = 0;
-      int i;
-
-      if (op->source)
-        {
-          source = get_oldroot_path (op->source);
-          source_mode = get_file_mode (source);
-          if (source_mode < 0)
-            die_with_error ("Can't get type of source %s", op->source);
-        }
-
-      if (op->dest)
-        {
-          dest = get_newroot_path (op->dest);
-          if (mkdir_with_parents (dest, 0755, FALSE) != 0)
-            die_with_error ("Can't mkdir parents for %s", op->dest);
-        }
-
-      switch (op->type)
-        {
-        case SETUP_RO_BIND_MOUNT:
-        case SETUP_DEV_BIND_MOUNT:
-        case SETUP_BIND_MOUNT:
-          if (source_mode == S_IFDIR)
-            {
-              if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-                die_with_error ("Can't mkdir %s", op->dest);
-            }
-          else if (ensure_file (dest, 0666) != 0)
-            die_with_error ("Can't create file at %s", op->dest);
-
-          uint32_t flags = (op->type == SETUP_RO_BIND_MOUNT ? BIND_READONLY : 0) |
-                           (op->type == SETUP_DEV_BIND_MOUNT ? BIND_DEVICES : 0);
-          if (bind_mount (proc_fd, source, dest, BIND_RECURSIVE | flags) != 0)
-            die_with_error ("Can't bind mount %s on %s", source, dest);
-          break;
-
-        case SETUP_REMOUNT_RO_NO_RECURSIVE:
-          if (bind_mount (proc_fd, NULL, dest, BIND_READONLY) != 0)
-            die_with_error ("Can't remount readonly on %s", dest);
-          break;
-
-        case SETUP_MOUNT_PROC:
-          if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-            die_with_error ("Can't mkdir %s", op->dest);
-
-          if (mount ("proc", dest, "proc", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0)
-            die_with_error ("Can't mount proc on %s", dest);
-          break;
-
-        case SETUP_MOUNT_DEV:
-          if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-            die_with_error ("Can't mkdir %s", op->dest);
-
-          if (mount ("tmpfs", dest, "tmpfs", MS_MGC_VAL | MS_NOSUID | MS_NODEV, "mode=0755") != 0)
-            die_with_error ("Can't mount tmpfs on %s", dest);
-
-          static const char *const devnodes[] = { "null", "zero", "full", "random", "urandom", "tty" };
-          for (i = 0; i < N_ELEMENTS (devnodes); i++)
-            {
-              cleanup_free char *node_dest = strconcat3 (dest, "/", devnodes[i]);
-              cleanup_free char *node_src = strconcat ("/oldroot/dev/", devnodes[i]);
-              if (create_file (node_dest, 0666, NULL) != 0)
-                die_with_error ("Can't create file %s/%s", op->dest, devnodes[i]);
-              if (bind_mount (proc_fd, node_src, node_dest, BIND_RECURSIVE | BIND_DEVICES) != 0)
-                die_with_error ("Can't bind mount %s on %s", node_src, node_dest);
-            }
-
-          static const char *const stdionodes[] = { "stdin", "stdout", "stderr" };
-          for (i = 0; i < N_ELEMENTS (stdionodes); i++)
-            {
-              cleanup_free char *target = xasprintf ("/proc/self/fd/%d", i);
-              cleanup_free char *node_dest = strconcat3 (dest, "/", stdionodes[i]);
-              if (symlink (target, node_dest) < 0)
-                die_with_error ("Can't create symlink %s/%s", op->dest, stdionodes[i]);
-            }
-
-          {
-            cleanup_free char *pts = strconcat (dest, "/pts");
-            cleanup_free char *ptmx = strconcat (dest, "/ptmx");
-            cleanup_free char *shm = strconcat (dest, "/shm");
-
-            if (mkdir (shm, 0755) == -1)
-              die_with_error ("Can't create %s/shm", op->dest);
-
-            if (mkdir (pts, 0755) == -1)
-              die_with_error ("Can't create %s/devpts", op->dest);
-            if (mount ("devpts", pts, "devpts", MS_MGC_VAL | MS_NOSUID | MS_NOEXEC | 0,
-                       "newinstance,ptmxmode=0666,mode=620") != 0)
-              die_with_error ("Can't mount devpts on %s", pts);
-
-            if (symlink ("pts/ptmx", ptmx) != 0)
-              die_with_error ("Can't make symlink at %s/ptmx", op->dest);
-          }
-
-          /* If stdout is a tty, that means the sandbox can write to the
-             outside-sandbox tty. In that case we also create a /dev/console
-             that points to this tty device. This should not cause any more
-             access than we already have, and it makes ttyname() work in the
-             sandbox. */
-          if (host_tty_dev != NULL && *host_tty_dev != 0)
-            {
-              cleanup_free char *src_tty_dev = strconcat ("/oldroot", host_tty_dev);
-              cleanup_free char *dest_console = strconcat (dest, "/console");
-
-              if (create_file (dest_console, 0666, NULL) != 0)
-                die_with_error ("creating %s/console", op->dest);
-
-              if (bind_mount (proc_fd, src_tty_dev, dest_console, BIND_RECURSIVE | BIND_DEVICES) != 0)
-                die_with_error ("Can't bind mount %s on %s", src_tty_dev, dest_console);
-            }
-
-          break;
-
-        case SETUP_MOUNT_TMPFS:
-          if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-            die_with_error ("Can't mkdir %s", op->dest);
-
-          if (mount ("tmpfs", dest, "tmpfs", MS_MGC_VAL | MS_NOSUID | MS_NODEV, "mode=0755") != 0)
-            die_with_error ("Can't mount tmpfs on %s", dest);
-          break;
-
-        case SETUP_MOUNT_MQUEUE:
-          if (mkdir (dest, 0755) != 0 && errno != EEXIST)
-            die_with_error ("Can't mkdir %s", op->dest);
-
-          if (mount ("mqueue", dest, "mqueue", 0, NULL) != 0)
-            die_with_error ("Can't mount mqueue on %s", dest);
-          break;
-
-        default:
-          die ("Unexpected type %d", op->type);
-        }
-    }
-}
+extern void setup_newroot (void);
 
 extern void resolve_symlinks_in_ops (void);
 
