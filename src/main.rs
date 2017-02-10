@@ -27,31 +27,23 @@ use libc::{c_char, c_int};
 use nix::mount as nixmount;
 use nix::mount::mount;
 
-use SetupOpType::*;
+use SetupOp::*;
 
 type BindOption = u32;
 const BIND_READONLY: BindOption = (1 << 0);
 const BIND_DEVICES: BindOption = (1 << 2);
 const BIND_RECURSIVE: BindOption = (1 << 3);
 
-#[repr(u32)]
 #[derive(Eq, PartialEq)]
-pub enum SetupOpType {
-    SETUP_BIND_MOUNT,
-    SETUP_RO_BIND_MOUNT,
-    SETUP_DEV_BIND_MOUNT,
-    SETUP_MOUNT_PROC,
-    SETUP_MOUNT_DEV,
-    SETUP_MOUNT_TMPFS,
-    SETUP_MOUNT_MQUEUE,
-    SETUP_REMOUNT_RO_NO_RECURSIVE,
-}
-
-#[repr(C)]
-pub struct SetupOp {
-    ty: SetupOpType,
-    src: Option<PathBuf>,
-    dst: Option<PathBuf>,
+pub enum SetupOp {
+    BindMount(PathBuf, PathBuf), // src, dst
+    ROBindMount(PathBuf, PathBuf), // src, dst
+    DevBindMount(PathBuf, PathBuf), // src, dst,
+    MountProc(PathBuf), // dst
+    MountDev(PathBuf), // dst
+    MountTmpfs(PathBuf), // dst
+    MountMQueue(PathBuf), // dst
+    RemountRONoRecursive(PathBuf), // dst
 }
 
 // TODO: not really
@@ -71,17 +63,8 @@ lazy_static! {
 }
 
 #[no_mangle]
-pub extern "C" fn setup_op_new(ty: SetupOpType, src: *const c_char, dst: *const c_char) {
-    let mut ops = OPS.lock().unwrap();
-    let (src, dst) = unsafe {(
-        if src != ptr::null() {
-            Some(PathBuf::from(CStr::from_ptr(src).to_str().unwrap()))
-        } else { None },
-        if dst != ptr::null() {
-            Some(PathBuf::from(CStr::from_ptr(dst).to_str().unwrap()))
-        } else { None }
-    )};
-    ops.push(SetupOp { ty, src, dst });
+pub extern "C" fn setup_op_new(op: SetupOp) {
+    OPS.lock().unwrap().push(op);
 }
 
 fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
@@ -128,6 +111,9 @@ fn ensure_file(path: &Path, mode: u32) -> Option<io::Error> {
     create_file(path, mode)
 }
 
+unsafe fn ptr_to_path(ptr: *const c_char) -> PathBuf {
+    PathBuf::from(CStr::from_ptr(ptr).to_str().unwrap())
+}
 fn path_to_cstring(path: &Path) -> CString {
     CString::new(path.to_str().unwrap()).unwrap()
 }
@@ -136,39 +122,37 @@ fn path_to_cstring(path: &Path) -> CString {
 pub extern "C" fn setup_newroot() {
     let mut ops = OPS.lock().unwrap();
     for op in ops.drain(..) {
-        let mut op_src = None;
-        let mut op_dst = None;
-        let mut src = None;
-        let mut dst = None;
-        let mut src_isdir = false;
 
-        if let Some(srcpath) = op.src {
-            let path = join_suffix(Path::new("/oldroot/"), &srcpath);
-            src_isdir = match fs::metadata(&path) {
-                Ok(metadata) => metadata.is_dir(),
-                Err(e) => panic!("Can't get type of source {}: {}", srcpath.to_str().unwrap(), e),
-            };
-            op_src = Some(path.to_str().unwrap().to_owned());
-            src = Some(srcpath)
+        fn prepare_src(src: &Path) -> (PathBuf, &str) {
+            let path = join_suffix(Path::new("/oldroot/"), src);
+            (path, src.to_str().unwrap())
         }
 
-        if let Some(dstpath) = op.dst {
-            let path = join_suffix(Path::new("/newroot/"), &dstpath);
+        fn prepare_dst(dst: &Path) -> (PathBuf, &str) {
+            let path = join_suffix(Path::new("/newroot/"), &dst);
             let mut parents = path.clone();
             parents.pop();
             if let Some(err) = ensure_dirs(&parents, 0o755) {
-                panic!("Can't mkdir parents for {}: {}", dstpath.to_str().unwrap(), err)
+                panic!("Can't mkdir parents for {}: {}", dst.to_str().unwrap(), err)
             }
-            op_dst = Some(path.to_str().unwrap().to_owned());
-            dst = Some(dstpath)
+            (path, dst.to_str().unwrap())
         }
 
-        match op.ty {
-            SETUP_RO_BIND_MOUNT |
-            SETUP_DEV_BIND_MOUNT |
-            SETUP_BIND_MOUNT => {
-                let (src, _op_src) = (&src.unwrap(), op_src.unwrap());
-                let (dst, op_dst) = (&dst.unwrap(), op_dst.unwrap());
+        let bindflags = match op {
+            ROBindMount(_, _) => BIND_READONLY,
+            DevBindMount(_, _) => BIND_DEVICES,
+            _ => 0,
+        };
+        match op {
+            ROBindMount(src, dst) |
+            DevBindMount(src, dst) |
+            BindMount(src, dst) => {
+                let (ref src, op_src) = prepare_src(&src);
+                let (ref dst, op_dst) = prepare_dst(&dst);
+                let src_isdir = match fs::metadata(src) {
+                    Ok(metadata) => metadata.is_dir(),
+                    Err(err) => panic!("Can't get type of source {}: {}", op_src, err),
+                };
                 if src_isdir {
                     if let Some(err) = ensure_dir(dst, 0o755) {
                         panic!("Can't mkdir {}: {}", op_dst, err)
@@ -177,22 +161,20 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't create file at {}: {}", op_dst, err)
                 }
 
-                let flags = if op.ty == SETUP_RO_BIND_MOUNT { BIND_READONLY } else { 0 } |
-                            if op.ty == SETUP_DEV_BIND_MOUNT { BIND_DEVICES } else { 0 };
                 let (c_src, c_dst) = (path_to_cstring(src), path_to_cstring(dst));
-                if unsafe { bind_mount(proc_fd, c_src.as_ptr(), c_dst.as_ptr(), BIND_RECURSIVE | flags) } != 0 {
+                if unsafe { bind_mount(proc_fd, c_src.as_ptr(), c_dst.as_ptr(), BIND_RECURSIVE | bindflags) } != 0 {
                     panic!("Can't bind mount {} on {}", src.to_str().unwrap(), dst.to_str().unwrap())
                 }
             },
-            SETUP_REMOUNT_RO_NO_RECURSIVE => {
-                let (dst, _op_dst) = (&dst.unwrap(), op_dst.unwrap());
+            RemountRONoRecursive(dst) => {
+                let (ref dst, _op_dst) = prepare_dst(&dst);
                 let c_dst = path_to_cstring(dst);
                 if unsafe { bind_mount(proc_fd, ptr::null(), c_dst.as_ptr(), BIND_READONLY) } != 0 {
                     panic!("Can't remount readonly on {}", dst.to_str().unwrap())
                 }
             },
-            SETUP_MOUNT_PROC => {
-                let (dst, op_dst) = (&dst.unwrap(), op_dst.unwrap());
+            MountProc(dst) => {
+                let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
@@ -201,8 +183,8 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't remount readonly on {}: {}", dst.to_str().unwrap(), err)
                 }
             },
-            SETUP_MOUNT_DEV => {
-                let (dst, op_dst) = (&dst.unwrap(), op_dst.unwrap());
+            MountDev(dst) => {
+                let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
@@ -273,8 +255,8 @@ pub extern "C" fn setup_newroot() {
                     }
                 }
             },
-            SETUP_MOUNT_TMPFS => {
-                let (dst, op_dst) = (&dst.unwrap(), op_dst.unwrap());
+            MountTmpfs(dst) => {
+                let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
@@ -284,8 +266,8 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't mount tmpfs on {}: {}", dst.to_str().unwrap(), err)
                 }
             },
-            SETUP_MOUNT_MQUEUE => {
-                let (dst, op_dst) = (&dst.unwrap(), op_dst.unwrap());
+            MountMQueue(dst) => {
+                let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
@@ -305,11 +287,10 @@ pub extern "C" fn setup_newroot() {
 #[no_mangle]
 pub extern "C" fn resolve_symlinks_in_ops () {
     for op in OPS.lock().unwrap().iter_mut() {
-        match op.ty {
-            SETUP_RO_BIND_MOUNT |
-            SETUP_DEV_BIND_MOUNT |
-            SETUP_BIND_MOUNT => {
-                let src = op.src.as_mut().unwrap();
+        match *op {
+            ROBindMount(ref mut src, _) |
+            DevBindMount(ref mut src, _) |
+            BindMount(ref mut src, _) => {
                 *src = match src.canonicalize() {
                     Ok(src) => src,
                     Err(e) => panic!("Can't find src path {}: {}", src.to_str().unwrap(), e),
@@ -391,7 +372,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--remount-ro takes one argument")
                 }
 
-                setup_op_new(SETUP_REMOUNT_RO_NO_RECURSIVE, ptr::null(), *argv.offset(1));
+                setup_op_new(RemountRONoRecursive(ptr_to_path(*argv.offset(1))));
 
                 argv = argv.offset(1);
                 argc -= 1
@@ -401,7 +382,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--bind takes two arguments")
                 }
 
-                setup_op_new(SETUP_BIND_MOUNT, *argv.offset(1), *argv.offset(2));
+                setup_op_new(BindMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
 
                 argv = argv.offset(2);
                 argc -= 2
@@ -411,7 +392,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--ro-bind takes two arguments")
                 }
 
-                setup_op_new(SETUP_RO_BIND_MOUNT, *argv.offset(1), *argv.offset(2));
+                setup_op_new(ROBindMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
 
                 argv = argv.offset(2);
                 argc -= 2
@@ -421,7 +402,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--dev-bind takes two arguments")
                 }
 
-                setup_op_new(SETUP_DEV_BIND_MOUNT, *argv.offset(1), *argv.offset(2));
+                setup_op_new(DevBindMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
 
                 argv = argv.offset(2);
                 argc -= 2
@@ -431,7 +412,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--proc takes one argument")
                 }
 
-                setup_op_new(SETUP_MOUNT_PROC, ptr::null(), *argv.offset(1));
+                setup_op_new(MountProc(ptr_to_path(*argv.offset(1))));
 
                 argv = argv.offset(1);
                 argc -= 1
@@ -441,7 +422,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--dev takes one argument")
                 }
 
-                setup_op_new(SETUP_MOUNT_DEV, ptr::null(), *argv.offset(1));
+                setup_op_new(MountDev(ptr_to_path(*argv.offset(1))));
 
                 argv = argv.offset(1);
                 argc -= 1
@@ -451,7 +432,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--tmpfs takes one argument")
                 }
 
-                setup_op_new(SETUP_MOUNT_TMPFS, ptr::null(), *argv.offset(1));
+                setup_op_new(MountTmpfs(ptr_to_path(*argv.offset(1))));
 
                 argv = argv.offset(1);
                 argc -= 1
@@ -461,7 +442,7 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                     panic!("--mqueue takes one argument")
                 }
 
-                setup_op_new(SETUP_MOUNT_MQUEUE, ptr::null(), *argv.offset(1));
+                setup_op_new(MountMQueue(ptr_to_path(*argv.offset(1))));
 
                 argv = argv.offset(1);
                 argc -= 1
