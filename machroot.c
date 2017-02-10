@@ -1077,9 +1077,7 @@ machroot (int    argc,
   char *old_cwd = NULL;
   pid_t pid;
   int event_fd = -1;
-  int child_wait_fd = -1;
   const char *new_cwd;
-  uint64_t val;
   int res UNUSED;
 
   real_uid = getuid ();
@@ -1138,10 +1136,6 @@ machroot (int    argc,
 
   clone_flags = SIGCHLD | CLONE_NEWNS;
 
-  child_wait_fd = eventfd (0, EFD_CLOEXEC);
-  if (child_wait_fd == -1)
-    die_with_error ("eventfd()");
-
   pid = raw_clone (clone_flags, NULL);
   if (pid == -1)
     {
@@ -1154,19 +1148,9 @@ machroot (int    argc,
 
       /* Initial launched process, wait for exec:ed command to exit */
 
-      /* Let child run now that the uid maps are set up */
-      val = 1;
-      res = write (child_wait_fd, &val, 8);
-      /* Ignore res, if e.g. the child died and closed child_wait_fd we don't want to error out here */
-      close (child_wait_fd);
-
       monitor_child (event_fd, pid);
       exit (0); /* Should not be reached, but better safe... */
     }
-
-  /* Wait for the parent to init uid/gid maps and drop caps */
-  res = read (child_wait_fd, &val, 8);
-  close (child_wait_fd);
 
   old_umask = umask (0);
 
