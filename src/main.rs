@@ -9,12 +9,11 @@ extern crate libc;
 extern crate nix;
 
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
 use std::io::Write;
 use std::os::unix::fs as unixfs;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::path;
 use std::path::{Path, PathBuf};
@@ -40,8 +39,8 @@ pub enum SetupOp {
     BindMount(PathBuf, PathBuf), // src, dst
     ROBindMount(PathBuf, PathBuf), // src, dst
     DevBindMount(PathBuf, PathBuf), // src, dst
-    MountSquash(PathBuf, PathBuf), // src, dst
-    MountSquashOverlay(PathBuf, PathBuf, PathBuf), // src, dst, overlaydir
+    MountSquash(PathBuf, PathBuf), // loopdev, dst
+    MountSquashOverlay(PathBuf, PathBuf, PathBuf), // loopdev, dst, overlaydir
     MountProc(PathBuf), // dst
     MountDev(PathBuf), // dst
     MountTmpfs(PathBuf), // dst
@@ -144,7 +143,7 @@ pub extern "C" fn setup_newroot() {
             BindMount(src, dst) => {
                 let (ref src, op_src) = prepare_src(&src);
                 let (ref dst, op_dst) = prepare_dst(&dst);
-                let src_isdir = match fs::metadata(src) {
+                let src_isdir = match src.metadata() {
                     Ok(metadata) => metadata.is_dir(),
                     Err(err) => panic!("Can't get type of source {}: {}", op_src, err),
                 };
@@ -311,11 +310,25 @@ pub extern "C" fn setup_newroot() {
 }
 
 unsafe fn squash_mount(src: &Path, dst: &Path) {
+    // Need https://github.com/nix-rust/nix/pull/508
+    type dev_t = u64;
+    pub fn major(dev: dev_t) -> u64 {
+        ((dev >> 32) & 0xfffff000) |
+        ((dev >>  8) & 0x00000fff)
+    }
+    match src.metadata() {
+        Ok(ref metadata) if
+            metadata.mode() & libc::S_IFMT == libc::S_IFBLK &&
+            major(metadata.rdev()) == 7 => {},
+        Ok(_) => panic!("Invalid loop device as source: {}", src.to_str().unwrap()),
+        Err(err) => panic!("Can't check source {} loop device: {}", src.to_str().unwrap(), err),
+    }
+
     let ctx = mnt_new_context();
     let fstype = CStr::from_bytes_with_nul(b"squashfs\0").unwrap();
     let src = path_to_cstring(src);
     let dst = path_to_cstring(dst);
-    let opts = CStr::from_bytes_with_nul(b"loop=/oldroot/dev/loop0\0").unwrap();
+    let opts = CStr::from_bytes_with_nul(b"ro\0").unwrap();
 
     assert!(mnt_context_set_fstype(ctx, fstype.as_ptr()) == 0);
     assert!(mnt_context_set_source(ctx, src.as_ptr()) == 0);
