@@ -1,5 +1,6 @@
 #![feature(const_fn)]
 #![feature(field_init_shorthand)]
+#![feature(link_args)]
 #![feature(slice_patterns)]
 
 #[macro_use]
@@ -38,7 +39,8 @@ const BIND_RECURSIVE: BindOption = (1 << 3);
 pub enum SetupOp {
     BindMount(PathBuf, PathBuf), // src, dst
     ROBindMount(PathBuf, PathBuf), // src, dst
-    DevBindMount(PathBuf, PathBuf), // src, dst,
+    DevBindMount(PathBuf, PathBuf), // src, dst
+    MountSquash(PathBuf, PathBuf), // src, dst
     MountProc(PathBuf), // dst
     MountDev(PathBuf), // dst
     MountTmpfs(PathBuf), // dst
@@ -76,37 +78,28 @@ fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {
     path.join(components)
 }
 
-fn mkdir(path: &Path, mode: u32) -> io::Result<()> {
-    DirBuilder::new().mode(mode).create(path)
+fn mkdir(path: &Path, mode: u32) -> Option<io::Error> {
+    DirBuilder::new().mode(mode).create(path).err()
 }
-fn mkdirall(path: &Path, mode: u32) -> io::Result<()> {
-    DirBuilder::new().recursive(true).mode(mode).create(path)
+fn mkdirall(path: &Path, mode: u32) -> Option<io::Error> {
+    DirBuilder::new().recursive(true).mode(mode).create(path).err()
 }
-fn allow_eexist(res: io::Result<()>) -> Option<io::Error> {
-    match res {
-        Ok(()) => None,
-        Err(ref e) if e.kind() == io::ErrorKind::AlreadyExists => None,
-        Err(e) => Some(e),
-    }
-}
-
-fn ensure_dirs(path: &Path, mode: u32) -> Option<io::Error> {
-    allow_eexist(mkdirall(path, mode))
-}
-fn ensure_dir(path: &Path, mode: u32) -> Option<io::Error> {
-    allow_eexist(mkdir(path, mode))
-}
-
 fn create_file(path: &Path, mode: u32) -> Option<io::Error> {
     OpenOptions::new().mode(mode).write(true).create_new(true).open(path).err()
 }
 
-// NOTE: this tries to avoid symlinks but doesn't do very well
+// NOTE: these try to avoid symlinks but doesn't do very well
+// NOTE: we check existence ahead of time, otherwise the create
+// file will fail in the read-only case with EROFS instead of EEXIST
+fn ensure_dirs(path: &Path, mode: u32) -> Option<io::Error> {
+    if let Ok(m) = path.metadata() { if m.is_dir() { return None } }
+    mkdirall(path, mode)
+}
+fn ensure_dir(path: &Path, mode: u32) -> Option<io::Error> {
+    if let Ok(m) = path.metadata() { if m.is_dir() { return None } }
+    mkdir(path, mode)
+}
 fn ensure_file(path: &Path, mode: u32) -> Option<io::Error> {
-    // We check this ahead of time, otherwise
-    // the create file will fail in the read-only
-    // case with EROFD instead of EEXIST
-    // TODO: should dirs handle this too?
     if let Ok(m) = path.metadata() { if m.is_file() { return None } }
     create_file(path, mode)
 }
@@ -166,6 +159,14 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't bind mount {} on {}", src.to_str().unwrap(), dst.to_str().unwrap())
                 }
             },
+            MountSquash(src, dst) => {
+                let (ref src, _op_src) = prepare_src(&src);
+                let (ref dst, op_dst) = prepare_dst(&dst);
+                if let Some(err) = ensure_dir(dst, 0o755) {
+                    panic!("Can't mkdir {}: {}", op_dst, err)
+                }
+                unsafe { squash_mount(src, dst) }
+            },
             RemountRONoRecursive(dst) => {
                 let (ref dst, _op_dst) = prepare_dst(&dst);
                 let c_dst = path_to_cstring(dst);
@@ -220,11 +221,11 @@ pub extern "C" fn setup_newroot() {
                 let ptmx = &join_suffix(dst, "ptmx");
                 let shm = &join_suffix(dst, "shm");
 
-                if let Err(err) = mkdir(shm, 0o755) {
+                if let Some(err) = mkdir(shm, 0o755) {
                     panic!("Can't create {}/shm: {}", op_dst, err)
                 }
 
-                if let Err(err) = mkdir(pts, 0o755) {
+                if let Some(err) = mkdir(pts, 0o755) {
                     panic!("Can't create {}/pts: {}", op_dst, err)
                 }
                 let flags = nixmount::MS_MGC_VAL | nixmount::MS_NOSUID | nixmount::MS_NOEXEC;
@@ -280,6 +281,30 @@ pub extern "C" fn setup_newroot() {
     }
 }
 
+unsafe fn squash_mount(src: &Path, dst: &Path) {
+    let ctx = mnt_new_context();
+    let fstype = CStr::from_bytes_with_nul(b"squashfs\0").unwrap();
+    let src = path_to_cstring(src);
+    let dst = path_to_cstring(dst);
+    let opts = CStr::from_bytes_with_nul(b"loop=/oldroot/dev/loop0\0").unwrap();
+
+    assert!(mnt_context_set_fstype(ctx, fstype.as_ptr()) == 0);
+    assert!(mnt_context_set_source(ctx, src.as_ptr()) == 0);
+    assert!(mnt_context_set_target(ctx, dst.as_ptr()) == 0);
+    assert!(mnt_context_set_options(ctx, opts.as_ptr()) == 0);
+
+    assert!(mnt_context_is_restricted(ctx) == 0);
+    assert!(mnt_context_disable_helpers(ctx, 1) == 0);
+    assert!(mnt_context_disable_mtab(ctx, 1) == 0);
+    assert!(mnt_context_enable_loopdel(ctx, 1) == 0);
+    assert!(mnt_context_mount(ctx) == 0);
+
+    assert!(mnt_context_get_status(ctx) == 1);
+    assert!(mnt_context_syscall_called(ctx) == 1);
+    assert!(mnt_context_get_syscall_errno(ctx) == 0);
+    mnt_free_context(ctx);
+}
+
 /* We need to resolve relative symlinks in the sandbox before we
    chroot so that absolute symlinks are handled correctly. We also
    need to do this after we've switched to the real uid so that
@@ -290,7 +315,8 @@ pub extern "C" fn resolve_symlinks_in_ops () {
         match *op {
             ROBindMount(ref mut src, _) |
             DevBindMount(ref mut src, _) |
-            BindMount(ref mut src, _) => {
+            BindMount(ref mut src, _) |
+            MountSquash(ref mut src, _) => {
                 *src = match src.canonicalize() {
                     Ok(src) => src,
                     Err(e) => panic!("Can't find src path {}: {}", src.to_str().unwrap(), e),
@@ -407,6 +433,16 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                 argv = argv.offset(2);
                 argc -= 2
             },
+            b"--squash" => {
+                if argc < 3 {
+                    panic!("--squash takes two arguments")
+                }
+
+                setup_op_new(MountSquash(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
+
+                argv = argv.offset(2);
+                argc -= 2
+            },
             b"--proc" => {
                 if argc < 2 {
                     panic!("--proc takes one argument")
@@ -459,6 +495,28 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
     *argvp = argv;
 }
 
+
+#[repr(C)]
+struct libmnt_context(libc::c_void);
+#[link_args = "-l :libmount.so.1"]
+extern "C" {
+    fn mnt_new_context() -> *mut libmnt_context;
+    fn mnt_context_set_fstype(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
+    fn mnt_context_set_source(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
+    fn mnt_context_set_target(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
+    fn mnt_context_set_options(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
+
+    fn mnt_context_is_restricted(ctx: *mut libmnt_context) -> c_int;
+    fn mnt_context_disable_helpers(ctx: *mut libmnt_context, disable: c_int) -> c_int;
+    fn mnt_context_disable_mtab(ctx: *mut libmnt_context, disable: c_int) -> c_int;
+    fn mnt_context_enable_loopdel(ctx: *mut libmnt_context, enable: c_int) -> c_int;
+    fn mnt_context_mount(ctx: *mut libmnt_context) -> c_int;
+
+    fn mnt_context_get_status(ctx: *mut libmnt_context) -> c_int;
+    fn mnt_context_syscall_called(ctx: *mut libmnt_context) -> c_int;
+    fn mnt_context_get_syscall_errno(ct: *mut libmnt_context) -> c_int;
+    fn mnt_free_context(ctx: *mut libmnt_context);
+}
 
 #[link(name = "machroot", kind = "static")]
 extern "C" {
