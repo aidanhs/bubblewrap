@@ -41,6 +41,7 @@ pub enum SetupOp {
     ROBindMount(PathBuf, PathBuf), // src, dst
     DevBindMount(PathBuf, PathBuf), // src, dst
     MountSquash(PathBuf, PathBuf), // src, dst
+    MountSquashOverlay(PathBuf, PathBuf, PathBuf), // src, dst, overlaydir
     MountProc(PathBuf), // dst
     MountDev(PathBuf), // dst
     MountTmpfs(PathBuf), // dst
@@ -114,6 +115,7 @@ fn path_to_cstring(path: &Path) -> CString {
 #[no_mangle]
 pub extern "C" fn setup_newroot() {
     let mut ops = OPS.lock().unwrap();
+    let mut uniq_count = 0;
     for op in ops.drain(..) {
 
         fn prepare_src(src: &Path) -> (PathBuf, &str) {
@@ -166,6 +168,33 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
                 unsafe { squash_mount(src, dst) }
+            },
+            MountSquashOverlay(src, dst, overlaydir) => {
+                let (ref src, _op_src) = prepare_src(&src);
+                let (ref dst, op_dst) = prepare_dst(&dst);
+                if let Some(err) = ensure_dir(dst, 0o755) {
+                    panic!("Can't mkdir {}: {}", op_dst, err)
+                }
+                let overlaydir = &join_suffix(Path::new("/oldroot/"), overlaydir);
+                let squashmount = &PathBuf::from(format!("/uniqsquash_{}", uniq_count));
+                uniq_count += 1;
+                let layerdir = &join_suffix(overlaydir, "layer");
+                let workdir = &join_suffix(overlaydir, "work");
+                if let Some(err) = mkdir(squashmount, 0o755) {
+                    panic!("Can't mkdir {}: {}", squashmount.to_str().unwrap(), err)
+                }
+                if let Some(err) = ensure_dir(layerdir, 0o755) {
+                    panic!("Can't mkdir {}: {}", layerdir.to_str().unwrap(), err)
+                }
+                if let Some(err) = ensure_dir(workdir, 0o755) {
+                    panic!("Can't mkdir {}: {}", workdir.to_str().unwrap(), err)
+                }
+                unsafe { squash_mount(src, squashmount) }
+                let flags = nixmount::MS_MGC_VAL;
+                let opts: &str = &format!("lowerdir={},upperdir={},workdir={}", squashmount.to_str().unwrap(), layerdir.to_str().unwrap(), workdir.to_str().unwrap());
+                if let Err(err) = mount(Some("overlayfs"), dst, Some("overlayfs"), flags, Some(opts)) {
+                    panic!("Can't mount overlayfs on {}: {}", op_dst, err)
+                }
             },
             RemountRONoRecursive(dst) => {
                 let (ref dst, _op_dst) = prepare_dst(&dst);
@@ -311,16 +340,23 @@ unsafe fn squash_mount(src: &Path, dst: &Path) {
    e.g. paths on fuse mounts work */
 #[no_mangle]
 pub extern "C" fn resolve_symlinks_in_ops () {
+    fn canon(path: &Path) -> PathBuf {
+        match path.canonicalize() {
+            Ok(path) => path,
+            Err(e) => panic!("Can't find path {}: {}", path.to_str().unwrap(), e),
+        }
+    }
     for op in OPS.lock().unwrap().iter_mut() {
         match *op {
             ROBindMount(ref mut src, _) |
             DevBindMount(ref mut src, _) |
             BindMount(ref mut src, _) |
             MountSquash(ref mut src, _) => {
-                *src = match src.canonicalize() {
-                    Ok(src) => src,
-                    Err(e) => panic!("Can't find src path {}: {}", src.to_str().unwrap(), e),
-                }
+                *src = canon(src)
+            },
+            MountSquashOverlay(ref mut src, _, ref mut overlaydir) => {
+                *src = canon(src);
+                *overlaydir = canon(overlaydir)
             },
             _ => (),
         }
@@ -442,6 +478,16 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
 
                 argv = argv.offset(2);
                 argc -= 2
+            },
+            b"--squash-overlay" => {
+                if argc < 4 {
+                    panic!("--squash-overlay takes three arguments")
+                }
+
+                setup_op_new(MountSquashOverlay(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2)), ptr_to_path(*argv.offset(3))));
+
+                argv = argv.offset(3);
+                argc -= 3
             },
             b"--proc" => {
                 if argc < 2 {
