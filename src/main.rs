@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use libc::{c_char, c_int};
 
 use nix::mount as nixmount;
-use nix::mount::mount;
+use nix::mount::{mount, umount2};
 
 use SetupOp::*;
 
@@ -114,6 +114,18 @@ fn path_to_cstring(path: &Path) -> CString {
 pub extern "C" fn setup_newroot() {
     let mut ops = OPS.lock().unwrap();
     let mut uniq_count = 0;
+
+    // Musl needs /proc to do realpath - https://github.com/alexcrichton/tar-rs/issues/94
+    {
+        if let Some(err) = mkdir(Path::new("/proc"), 0o755) {
+            panic!("Can't create dir for temporary proc: {}", err)
+        }
+        let flags = nixmount::MS_MGC_VAL | nixmount::MS_NOSUID | nixmount::MS_NOEXEC | nixmount::MS_NODEV;
+        if let Err(err) = mount::<_, _, _, Path>(Some("proc"), "/proc", Some("proc"), flags, None) {
+            panic!("Can't mount temporary proc: {}", err)
+        }
+    }
+
     for op in ops.drain(..) {
 
         fn prepare_src(src: &Path) -> (PathBuf, &str) {
@@ -196,7 +208,7 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't mount squashfs {} on {}: {}", op_src, op_dst, err)
                 }
                 let opts: &str = &format!("lowerdir={},upperdir={},workdir={}", squashmount.to_str().unwrap(), layerdir.to_str().unwrap(), workdir.to_str().unwrap());
-                if let Err(err) = mount(Some("overlayfs"), dst, Some("overlayfs"), nixmount::MS_MGC_VAL, Some(opts)) {
+                if let Err(err) = mount(Some("overlay"), dst, Some("overlay"), nixmount::MS_MGC_VAL, Some(opts)) {
                     panic!("Can't mount overlayfs on {}: {}", op_dst, err)
                 }
             },
@@ -214,7 +226,7 @@ pub extern "C" fn setup_newroot() {
                 }
                 let flags = nixmount::MS_MGC_VAL | nixmount::MS_NOSUID | nixmount::MS_NOEXEC | nixmount::MS_NODEV;
                 if let Err(err) = mount::<_, _, _, Path>(Some("proc"), dst, Some("proc"), flags, None) {
-                    panic!("Can't remount readonly on {}: {}", dst.to_str().unwrap(), err)
+                    panic!("Can't mount proc on {}: {}", dst.to_str().unwrap(), err)
                 }
             },
             MountDev(dst) => {
@@ -312,6 +324,13 @@ pub extern "C" fn setup_newroot() {
             },
         }
     }
+
+    // See comment at top about musl
+    {
+        if let Err(err) = umount2("/proc", nixmount::MntFlags::empty()) {
+            panic!("Can't unmount temporary proc :{}", err)
+        }
+    }
 }
 
 fn check_loop_device(path: &Path) {
@@ -371,17 +390,20 @@ pub extern "C" fn usage_and_exit(ecode: c_int, out: c_int) -> ! {
 
     write!(file, "usage: {} [OPTIONS...] COMMAND [ARGS...]\n", argv0).unwrap();
     write!(file, "
-    --help                       Print this help
-    --version                    Print version
-    --chdir DIR                  Change directory to DIR
-    --bind SRC DEST              Bind mount the host path SRC on DEST
-    --dev-bind SRC DEST          Bind mount the host path SRC on DEST, allowing device access
-    --ro-bind SRC DEST           Bind mount the host path SRC readonly on DEST
-    --remount-ro DEST            Remount DEST as readonly, it doesn't recursively remount
-    --proc DEST                  Mount procfs on DEST
-    --dev DEST                   Mount new dev on DEST
-    --tmpfs DEST                 Mount new tmpfs on DEST
-    --mqueue DEST                Mount new mqueue on DEST
+    --help                         Print this help
+    --version                      Print version
+    --chdir DIR                    Change directory to DIR
+    --bind SRC DST                 Bind mount the host path SRC on DST
+    --dev-bind SRC DST             Bind mount the host path SRC on DST, allowing device access
+    --ro-bind SRC DST              Bind mount the host path SRC readonly on DST
+    --remount-ro DST               Remount DST as readonly, it doesn't recursively remount
+    --squashfs DEV DST             Mount DEV squashfs filesystem on DST
+    --squashfs-overlay DEV DST DIR Mount DEV squashfs filesystem on DST with an overlayfs
+                                   layer on top, using DIR to contain the layer and work dirs
+    --proc DST                     Mount procfs on DST
+    --dev DST                      Mount new dev on DST
+    --tmpfs DST                    Mount new tmpfs on DST
+    --mqueue DST                   Mount new mqueue on DST
 "
     ).unwrap();
     process::exit(ecode)
