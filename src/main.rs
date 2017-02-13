@@ -1,6 +1,5 @@
 #![feature(const_fn)]
 #![feature(field_init_shorthand)]
-#![feature(link_args)]
 #![feature(slice_patterns)]
 
 #[macro_use]
@@ -161,15 +160,18 @@ pub extern "C" fn setup_newroot() {
                 }
             },
             MountSquash(src, dst) => {
-                let (ref src, _op_src) = prepare_src(&src);
+                let (ref src, op_src) = prepare_src(&src);
                 let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
-                unsafe { squash_mount(src, dst) }
+                check_loop_device(src);
+                if let Err(err) = mount::<_, _, _, Path>(Some(src), dst, Some("squashfs"), nixmount::MS_MGC_VAL, None) {
+                    panic!("Can't mount squashfs {} on {}: {}", op_src, op_dst, err)
+                }
             },
             MountSquashOverlay(src, dst, overlaydir) => {
-                let (ref src, _op_src) = prepare_src(&src);
+                let (ref src, op_src) = prepare_src(&src);
                 let (ref dst, op_dst) = prepare_dst(&dst);
                 if let Some(err) = ensure_dir(dst, 0o755) {
                     panic!("Can't mkdir {}: {}", op_dst, err)
@@ -188,10 +190,13 @@ pub extern "C" fn setup_newroot() {
                 if let Some(err) = ensure_dir(workdir, 0o755) {
                     panic!("Can't mkdir {}: {}", workdir.to_str().unwrap(), err)
                 }
-                unsafe { squash_mount(src, squashmount) }
-                let flags = nixmount::MS_MGC_VAL;
+                check_loop_device(src);
+                let flags = nixmount::MS_MGC_VAL | nixmount::MS_RDONLY;
+                if let Err(err) = mount::<_, _, _, Path>(Some(src), squashmount, Some("squashfs"), flags, None) {
+                    panic!("Can't mount squashfs {} on {}: {}", op_src, op_dst, err)
+                }
                 let opts: &str = &format!("lowerdir={},upperdir={},workdir={}", squashmount.to_str().unwrap(), layerdir.to_str().unwrap(), workdir.to_str().unwrap());
-                if let Err(err) = mount(Some("overlayfs"), dst, Some("overlayfs"), flags, Some(opts)) {
+                if let Err(err) = mount(Some("overlayfs"), dst, Some("overlayfs"), nixmount::MS_MGC_VAL, Some(opts)) {
                     panic!("Can't mount overlayfs on {}: {}", op_dst, err)
                 }
             },
@@ -309,42 +314,20 @@ pub extern "C" fn setup_newroot() {
     }
 }
 
-unsafe fn squash_mount(src: &Path, dst: &Path) {
+fn check_loop_device(path: &Path) {
     // Need https://github.com/nix-rust/nix/pull/508
     type dev_t = u64;
     pub fn major(dev: dev_t) -> u64 {
         ((dev >> 32) & 0xfffff000) |
         ((dev >>  8) & 0x00000fff)
     }
-    match src.metadata() {
+    match path.metadata() {
         Ok(ref metadata) if
             metadata.mode() & libc::S_IFMT == libc::S_IFBLK &&
             major(metadata.rdev()) == 7 => {},
-        Ok(_) => panic!("Invalid loop device as source: {}", src.to_str().unwrap()),
-        Err(err) => panic!("Can't check source {} loop device: {}", src.to_str().unwrap(), err),
+        Ok(_) => panic!("Not a loop device : {}", path.to_str().unwrap()),
+        Err(err) => panic!("Can't check source {} loop device: {}", path.to_str().unwrap(), err),
     }
-
-    let ctx = mnt_new_context();
-    let fstype = CStr::from_bytes_with_nul(b"squashfs\0").unwrap();
-    let src = path_to_cstring(src);
-    let dst = path_to_cstring(dst);
-    let opts = CStr::from_bytes_with_nul(b"ro\0").unwrap();
-
-    assert!(mnt_context_set_fstype(ctx, fstype.as_ptr()) == 0);
-    assert!(mnt_context_set_source(ctx, src.as_ptr()) == 0);
-    assert!(mnt_context_set_target(ctx, dst.as_ptr()) == 0);
-    assert!(mnt_context_set_options(ctx, opts.as_ptr()) == 0);
-
-    assert!(mnt_context_is_restricted(ctx) == 0);
-    assert!(mnt_context_disable_helpers(ctx, 1) == 0);
-    assert!(mnt_context_disable_mtab(ctx, 1) == 0);
-    assert!(mnt_context_enable_loopdel(ctx, 1) == 0);
-    assert!(mnt_context_mount(ctx) == 0);
-
-    assert!(mnt_context_get_status(ctx) == 1);
-    assert!(mnt_context_syscall_called(ctx) == 1);
-    assert!(mnt_context_get_syscall_errno(ctx) == 0);
-    mnt_free_context(ctx);
 }
 
 /* We need to resolve relative symlinks in the sandbox before we
@@ -552,29 +535,6 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
 
     *argcp = argc;
     *argvp = argv;
-}
-
-
-#[repr(C)]
-struct libmnt_context(libc::c_void);
-#[link_args = "-l :libmount.so.1"]
-extern "C" {
-    fn mnt_new_context() -> *mut libmnt_context;
-    fn mnt_context_set_fstype(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
-    fn mnt_context_set_source(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
-    fn mnt_context_set_target(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
-    fn mnt_context_set_options(ctx: *mut libmnt_context, optstr: *const c_char) -> c_int;
-
-    fn mnt_context_is_restricted(ctx: *mut libmnt_context) -> c_int;
-    fn mnt_context_disable_helpers(ctx: *mut libmnt_context, disable: c_int) -> c_int;
-    fn mnt_context_disable_mtab(ctx: *mut libmnt_context, disable: c_int) -> c_int;
-    fn mnt_context_enable_loopdel(ctx: *mut libmnt_context, enable: c_int) -> c_int;
-    fn mnt_context_mount(ctx: *mut libmnt_context) -> c_int;
-
-    fn mnt_context_get_status(ctx: *mut libmnt_context) -> c_int;
-    fn mnt_context_syscall_called(ctx: *mut libmnt_context) -> c_int;
-    fn mnt_context_get_syscall_errno(ct: *mut libmnt_context) -> c_int;
-    fn mnt_free_context(ctx: *mut libmnt_context);
 }
 
 #[link(name = "machroot", kind = "static")]
