@@ -178,7 +178,8 @@ pub extern "C" fn setup_newroot() {
                     panic!("Can't mkdir {}: {}", op_dst, err)
                 }
                 check_loop_device(src);
-                if let Err(err) = mount::<_, _, _, Path>(Some(src), dst, Some("squashfs"), nixmount::MS_MGC_VAL, None) {
+                let flags = nixmount::MS_MGC_VAL | nixmount::MS_RDONLY;
+                if let Err(err) = mount::<_, _, _, Path>(Some(src), dst, Some("squashfs"), flags, None) {
                     panic!("Can't mount squashfs {} on {}: {}", op_src, op_dst, err)
                 }
             },
