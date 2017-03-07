@@ -1,6 +1,6 @@
 [root]
 name = "machroot"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "lazy_static 0.1.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "libc 0.2.20 (registry+https://github.com/rust-lang/crates.io-index)",
