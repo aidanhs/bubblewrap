@@ -7,10 +7,11 @@ extern crate lazy_static;
 extern crate libc;
 extern crate nix;
 
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs as unixfs;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::{FromRawFd, RawFd};
@@ -66,6 +67,26 @@ lazy_static! {
 #[no_mangle]
 pub extern "C" fn setup_op_new(op: SetupOp) {
     OPS.lock().unwrap().push(op);
+}
+
+#[no_mangle]
+pub extern "C" fn path_equal(path1: *const c_char, path2: *const c_char) -> c_int {
+    let path1 = Path::new(OsStr::from_bytes(unsafe {CStr::from_ptr(path1).to_bytes() }));
+    let path2 = Path::new(OsStr::from_bytes(unsafe {CStr::from_ptr(path2).to_bytes() }));
+    if path1 == path2 { 1 } else { 0 }
+}
+
+/* Compares if str has a specific path prefix. This differs
+   from a regular prefix in two ways. First of all there may
+   be multiple slashes separating the path elements, and
+   secondly, if a prefix is matched that has to be en entire
+   path element. For instance /a/prefix matches /a/prefix/foo/bar,
+   but not /a/prefixfoo/bar. */
+#[no_mangle]
+pub extern "C" fn has_path_prefix(path: *const c_char, prefix: *const c_char) -> c_int {
+    let path = Path::new(OsStr::from_bytes(unsafe {CStr::from_ptr(path).to_bytes() }));
+    let prefix = Path::new(OsStr::from_bytes(unsafe {CStr::from_ptr(prefix).to_bytes() }));
+    if path.starts_with(prefix) { 1 } else { 0 }
 }
 
 fn join_suffix<P: AsRef<Path>>(path: &Path, suffix: P) -> PathBuf {

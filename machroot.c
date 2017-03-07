@@ -105,10 +105,6 @@ static void  xsetenv (const char *name,
                int         overwrite);
 static char * xasprintf (const char *format,
                   ...) __attribute__((format (printf, 1, 2)));
-static bool  has_path_prefix (const char *str,
-                       const char *prefix);
-static bool  path_equal (const char *path1,
-                  const char *path2);
 static int   fdwalk (int                     proc_fd,
               int                     (*cb)(void *data,
                                   int fd),
@@ -233,76 +229,9 @@ xstrdup (const char *str)
   return res;
 }
 
-/* Compares if str has a specific path prefix. This differs
-   from a regular prefix in two ways. First of all there may
-   be multiple slashes separating the path elements, and
-   secondly, if a prefix is matched that has to be en entire
-   path element. For instance /a/prefix matches /a/prefix/foo/bar,
-   but not /a/prefixfoo/bar. */
-static bool
-has_path_prefix (const char *str,
-                 const char *prefix)
-{
-  while (TRUE)
-    {
-      /* Skip consecutive slashes to reach next path
-         element */
-      while (*str == '/')
-        str++;
-      while (*prefix == '/')
-        prefix++;
+extern bool has_path_prefix (const char *str, const char *prefix);
 
-      /* No more prefix path elements? Done! */
-      if (*prefix == 0)
-        return TRUE;
-
-      /* Compare path element */
-      while (*prefix != 0 && *prefix != '/')
-        {
-          if (*str != *prefix)
-            return FALSE;
-          str++;
-          prefix++;
-        }
-
-      /* Matched prefix path element,
-         must be entire str path element */
-      if (*str != '/' && *str != 0)
-        return FALSE;
-    }
-}
-
-static bool
-path_equal (const char *path1,
-            const char *path2)
-{
-  while (TRUE)
-    {
-      /* Skip consecutive slashes to reach next path
-         element */
-      while (*path1 == '/')
-        path1++;
-      while (*path2 == '/')
-        path2++;
-
-      /* No more prefix path elements? Done! */
-      if (*path1 == 0 || *path2 == 0)
-        return *path1 == 0 && *path2 == 0;
-
-      /* Compare path element */
-      while (*path1 != 0 && *path1 != '/')
-        {
-          if (*path1 != *path2)
-            return FALSE;
-          path1++;
-          path2++;
-        }
-
-      /* Matched path1 path element, must be entire path element */
-      if (*path2 != '/' && *path2 != 0)
-        return FALSE;
-    }
-}
+extern int path_equal (const char *path1, const char *path2);
 
 
 static void
@@ -904,7 +833,6 @@ bind_mount (int           proc_fd,
 /* Globals to avoid having to use getuid(), since the uid/gid changes during runtime */
 static uid_t real_uid;
 static gid_t real_gid;
-static const char *argv0;
 extern const char *host_tty_dev;
 extern int proc_fd;
 
@@ -1085,8 +1013,6 @@ machroot (int    argc,
 
   /* The initial code is run with high permissions
      (i.e. CAP_SYS_ADMIN), so take lots of care. */
-
-  argv0 = argv[0];
 
   if (isatty (1))
     host_tty_dev = ttyname (1);
