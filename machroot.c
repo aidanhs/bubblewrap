@@ -797,7 +797,7 @@ bind_mount (int           proc_fd,
 
   assert (path_equal (mount_tab[0].mountpoint, resolved_dest));
   current_flags = mount_tab[0].options;
-  new_flags = current_flags | (devices ? 0 : MS_NODEV) | MS_NOSUID | (readonly ? MS_RDONLY : 0);
+  new_flags = current_flags | (devices ? 0 : MS_NODEV) | (readonly ? MS_RDONLY : 0);
   if (new_flags != current_flags &&
       mount ("none", resolved_dest,
              NULL, MS_MGC_VAL | MS_BIND | MS_REMOUNT | new_flags, NULL) != 0)
@@ -812,7 +812,7 @@ bind_mount (int           proc_fd,
       for (i = 1; mount_tab[i].mountpoint != NULL; i++)
         {
           current_flags = mount_tab[i].options;
-          new_flags = current_flags | (devices ? 0 : MS_NODEV) | MS_NOSUID | (readonly ? MS_RDONLY : 0);
+          new_flags = current_flags | (devices ? 0 : MS_NODEV) | (readonly ? MS_RDONLY : 0);
           if (new_flags != current_flags &&
               mount ("none", mount_tab[i].mountpoint,
                      NULL, MS_MGC_VAL | MS_BIND | MS_REMOUNT | new_flags, NULL) != 0)
