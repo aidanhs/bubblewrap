@@ -155,6 +155,9 @@ pub extern "C" fn setup_newroot() {
         }
 
         fn prepare_dst(dst: &Path) -> (PathBuf, &str) {
+            if !dst.is_absolute() {
+                panic!("Destination {} is not an absolute path", dst.to_str().unwrap())
+            }
             let path = join_suffix(Path::new("/newroot/"), &dst);
             let mut parents = path.clone();
             parents.pop();
