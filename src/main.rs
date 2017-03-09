@@ -34,11 +34,13 @@ const BIND_READONLY: BindOption = (1 << 0);
 const BIND_DEVICES: BindOption = (1 << 2);
 const BIND_RECURSIVE: BindOption = (1 << 3);
 
+// TODO: make Mount consistent at beginning or end
 #[derive(Eq, PartialEq)]
 pub enum SetupOp {
     BindMount(PathBuf, PathBuf), // src, dst
-    ROBindMount(PathBuf, PathBuf), // src, dst
     DevBindMount(PathBuf, PathBuf), // src, dst
+    ROBindMount(PathBuf, PathBuf), // src, dst
+    OverlayMount(PathBuf, PathBuf, PathBuf), // src, dst, overlaydir
     MountSquash(PathBuf, PathBuf), // loopdev, dst
     MountSquashOverlay(PathBuf, PathBuf, PathBuf), // loopdev, dst, overlaydir
     MountProc(PathBuf), // dst
@@ -168,14 +170,14 @@ pub extern "C" fn setup_newroot() {
         }
 
         let bindflags = match op {
-            ROBindMount(_, _) => BIND_READONLY,
             DevBindMount(_, _) => BIND_DEVICES,
+            ROBindMount(_, _) => BIND_READONLY,
             _ => 0,
         };
         match op {
-            ROBindMount(src, dst) |
+            BindMount(src, dst) |
             DevBindMount(src, dst) |
-            BindMount(src, dst) => {
+            ROBindMount(src, dst) => {
                 let (ref src, op_src) = prepare_src(&src);
                 let (ref dst, op_dst) = prepare_dst(&dst);
                 let src_isdir = match src.metadata() {
@@ -193,6 +195,26 @@ pub extern "C" fn setup_newroot() {
                 let (c_src, c_dst) = (path_to_cstring(src), path_to_cstring(dst));
                 if unsafe { bind_mount(proc_fd, c_src.as_ptr(), c_dst.as_ptr(), BIND_RECURSIVE | bindflags) } != 0 {
                     panic!("Can't bind mount {} on {}", src.to_str().unwrap(), dst.to_str().unwrap())
+                }
+            },
+            OverlayMount(src, dst, overlaydir) => {
+                let (ref src, op_src) = prepare_src(&src);
+                let (ref dst, op_dst) = prepare_dst(&dst);
+                if let Some(err) = ensure_dir(dst, 0o755) {
+                    panic!("Can't mkdir {}: {}", op_dst, err)
+                }
+                let overlaydir = &join_suffix(Path::new("/oldroot/"), overlaydir);
+                let layerdir = &join_suffix(overlaydir, "layer");
+                let workdir = &join_suffix(overlaydir, "work");
+                if let Some(err) = ensure_dir(layerdir, 0o755) {
+                    panic!("Can't mkdir {}: {}", layerdir.to_str().unwrap(), err)
+                }
+                if let Some(err) = ensure_dir(workdir, 0o755) {
+                    panic!("Can't mkdir {}: {}", workdir.to_str().unwrap(), err)
+                }
+                let opts: &str = &format!("lowerdir={},upperdir={},workdir={}", src.to_str().unwrap(), layerdir.to_str().unwrap(), workdir.to_str().unwrap());
+                if let Err(err) = mount(Some("overlay"), dst, Some("overlay"), nixmount::MS_MGC_VAL, Some(opts)) {
+                    panic!("Can't mount overlayfs on {}: {}", op_dst, err)
                 }
             },
             MountSquash(src, dst) => {
@@ -388,12 +410,13 @@ pub extern "C" fn resolve_symlinks_in_ops () {
     }
     for op in OPS.lock().unwrap().iter_mut() {
         match *op {
-            ROBindMount(ref mut src, _) |
-            DevBindMount(ref mut src, _) |
             BindMount(ref mut src, _) |
+            DevBindMount(ref mut src, _) |
+            ROBindMount(ref mut src, _) |
             MountSquash(ref mut src, _) => {
                 *src = canon(src)
             },
+            OverlayMount(ref mut src, _, ref mut overlaydir) |
             MountSquashOverlay(ref mut src, _, ref mut overlaydir) => {
                 *src = canon(src);
                 *overlaydir = canon(overlaydir)
@@ -415,20 +438,22 @@ pub extern "C" fn usage_and_exit(ecode: c_int, out: c_int) -> ! {
 
     write!(file, "usage: {} [OPTIONS...] COMMAND [ARGS...]\n", argv0).unwrap();
     write!(file, "
-    --help                         Print this help
-    --version                      Print version
-    --chdir DIR                    Change directory to DIR
-    --bind SRC DST                 Bind mount the host path SRC on DST
-    --dev-bind SRC DST             Bind mount the host path SRC on DST, allowing device access
-    --ro-bind SRC DST              Bind mount the host path SRC readonly on DST
-    --remount-ro DST               Remount DST as readonly, it doesn't recursively remount
-    --squashfs DEV DST             Mount DEV squashfs filesystem on DST
-    --squashfs-overlay DEV DST DIR Mount DEV squashfs filesystem on DST with an overlayfs
-                                   layer on top, using DIR to contain the layer and work dirs
-    --proc DST                     Mount procfs on DST
-    --dev DST                      Mount new dev on DST
-    --tmpfs DST                    Mount new tmpfs on DST
-    --mqueue DST                   Mount new mqueue on DST
+    --help                       Print this help
+    --version                    Print version
+    --chdir DIR                  Change directory to DIR
+    --bind SRC DST               Bind mount the host path SRC on DST
+    --dev-bind SRC DST           Bind mount the host path SRC on DST, allowing device access
+    --ro-bind SRC DST            Bind mount the host path SRC readonly on DST
+    --overlay SRC DST DIR        Mount the host path SRC at DST with an overlayfs
+                                 layer on top, using DIR to contain the layer and work dirs
+    --remount-ro DST             Remount DST as readonly, it doesn't recursively remount
+    --squash DEV DST             Mount DEV squashfs filesystem on DST
+    --squash-overlay DEV DST DIR Mount DEV squashfs filesystem on DST with an overlayfs
+                                 layer on top, using DIR to contain the layer and work dirs
+    --proc DST                   Mount procfs on DST
+    --dev DST                    Mount new dev on DST
+    --tmpfs DST                  Mount new tmpfs on DST
+    --mqueue DST                 Mount new mqueue on DST
 "
     ).unwrap();
     process::exit(ecode)
@@ -492,6 +517,16 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                 argv = argv.offset(2);
                 argc -= 2
             },
+            b"--dev-bind" => {
+                if argc < 3 {
+                    panic!("--dev-bind takes two arguments")
+                }
+
+                setup_op_new(DevBindMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
+
+                argv = argv.offset(2);
+                argc -= 2
+            },
             b"--ro-bind" => {
                 if argc < 3 {
                     panic!("--ro-bind takes two arguments")
@@ -502,15 +537,15 @@ pub unsafe extern "C" fn parse_args(argcp: *mut c_int, argvp: *mut *mut *mut c_c
                 argv = argv.offset(2);
                 argc -= 2
             },
-            b"--dev-bind" => {
-                if argc < 3 {
-                    panic!("--dev-bind takes two arguments")
+            b"--overlay" => {
+                if argc < 4 {
+                    panic!("--overlay takes three arguments")
                 }
 
-                setup_op_new(DevBindMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2))));
+                setup_op_new(OverlayMount(ptr_to_path(*argv.offset(1)), ptr_to_path(*argv.offset(2)), ptr_to_path(*argv.offset(3))));
 
-                argv = argv.offset(2);
-                argc -= 2
+                argv = argv.offset(3);
+                argc -= 3
             },
             b"--squash" => {
                 if argc < 3 {
